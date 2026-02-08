@@ -3,6 +3,7 @@ Streamlit 대시보드
 한국 주식 시장 분석 결과를 시각적으로 표시
 """
 
+import os
 import json
 import logging
 from datetime import datetime, timedelta
@@ -15,6 +16,14 @@ import plotly.graph_objects as go
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from src.ai_analyzer import (
+    SUPPORTED_PROVIDERS,
+    STEP_DEFINITIONS,
+    StepProviderConfig,
+    get_available_providers,
+    get_provider_display_name,
+)
 
 # 프로젝트 경로
 PROJECT_ROOT = Path(__file__).parent
@@ -155,7 +164,86 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 즉시 분석 실행
+    # ===== AI 프로바이더 설정 =====
+    st.subheader("🤖 AI 프로바이더")
+
+    provider_options = list(SUPPORTED_PROVIDERS.keys())
+    provider_labels = {pid: conf["name"] for pid, conf in SUPPORTED_PROVIDERS.items()}
+    provider_icons = {"claude": "🟠", "gpt": "🟢", "gemini": "🔵", "grok": "⚫"}
+
+    def _fmt_provider(x):
+        return f"{provider_icons.get(x, '')} {provider_labels.get(x, x)}"
+
+    # 사용 가능한 프로바이더 표시
+    available = get_available_providers()
+    if available:
+        st.caption(f"✅ API 키 설정됨: {', '.join(available)}")
+    else:
+        st.warning("설정된 API 키가 없습니다")
+
+    # 글로벌 기본 프로바이더
+    default_provider = os.getenv("AI_PROVIDER", "claude").lower().strip()
+    if default_provider not in provider_options:
+        default_provider = "claude"
+
+    selected_default = st.selectbox(
+        "기본 프로바이더",
+        provider_options,
+        index=provider_options.index(default_provider),
+        format_func=_fmt_provider,
+        help="Step별 미지정 시 사용되는 기본 프로바이더",
+    )
+
+    # Step별 프로바이더 설정
+    st.markdown("**Step별 프로바이더 설정**")
+    step_options = ["(기본값 사용)"] + provider_options
+    env_step_config = StepProviderConfig.from_env()
+
+    step_selections = {}
+    for step_num, step_def in STEP_DEFINITIONS.items():
+        env_val = env_step_config.get(step_num)
+        default_idx = step_options.index(env_val) if env_val and env_val in provider_options else 0
+
+        selected = st.selectbox(
+            f"Step {step_num}: {step_def['name']}",
+            step_options,
+            index=default_idx,
+            format_func=lambda x: _fmt_provider(x) if x in provider_options else x,
+            key=f"step{step_num}_provider",
+            help=step_def["desc"],
+        )
+        step_selections[step_num] = selected if selected != "(기본값 사용)" else None
+
+    # StepProviderConfig 구성
+    sidebar_step_config = StepProviderConfig(
+        step1=step_selections.get(1),
+        step2=step_selections.get(2),
+        step3=step_selections.get(3),
+        step4=step_selections.get(4),
+        step5=step_selections.get(5),
+    )
+
+    # 설정 요약
+    summary_lines = []
+    for step_num in range(1, 6):
+        p = step_selections.get(step_num) or selected_default
+        icon = provider_icons.get(p, "")
+        summary_lines.append(f"S{step_num}: {icon}{p}")
+    st.caption(" | ".join(summary_lines))
+
+    # 분석 실행에 필요한 프로바이더 키 확인
+    needed_providers = set()
+    for step_num in range(1, 6):
+        needed_providers.add(step_selections.get(step_num) or selected_default)
+    missing_keys = [
+        p for p in needed_providers
+        if p not in available
+    ]
+    has_all_keys = len(missing_keys) == 0
+
+    st.markdown("---")
+
+    # ===== 분석 실행 =====
     st.subheader("🚀 분석 실행")
     analysis_date = st.text_input(
         "분석 날짜 (YYYYMMDD)",
@@ -163,12 +251,21 @@ with st.sidebar:
         help="비워두면 최근 거래일 기준",
     )
 
-    if st.button("▶️ 분석 실행", type="primary", use_container_width=True):
-        with st.spinner("분석 진행 중... (수 분 소요될 수 있습니다)"):
+    if st.button(
+        "▶️ 분석 실행",
+        type="primary",
+        use_container_width=True,
+        disabled=not has_all_keys,
+    ):
+        with st.spinner("🤖 Step별 AI 분석 진행 중... (수 분 소요될 수 있습니다)"):
             try:
                 from main import run_daily_analysis
 
-                result = run_daily_analysis(analysis_date if analysis_date else None)
+                result = run_daily_analysis(
+                    date=analysis_date if analysis_date else None,
+                    provider=selected_default,
+                    step_config=sidebar_step_config,
+                )
                 if result["status"] == "success":
                     st.success(
                         f"✅ 분석 완료! ({result['filtered_count']}개 종목)"
@@ -179,9 +276,13 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"❌ 분석 실행 중 오류: {e}")
 
+    if not has_all_keys:
+        st.caption(f"⚠️ API 키 미설정: {', '.join(missing_keys)}")
+
     st.markdown("---")
     st.caption("💡 매일 15:40에 자동 분석 실행")
     st.caption("CLI: `python main.py --schedule`")
+    st.caption("CLI: `python main.py --step1 gemini --step4 claude`")
 
 
 # ===== 메인 콘텐츠 =====
@@ -511,6 +612,19 @@ with tab_news:
 # ===== Tab 5: 전체 리포트 =====
 with tab_report:
     st.subheader("📄 AI 생성 리포트")
+
+    # 사용된 프로바이더 정보 표시 (Step별)
+    if report_data:
+        ai_providers = report_data.get("ai_providers", {})
+        ai_names = report_data.get("ai_provider_names", {})
+        if ai_providers:
+            cols = st.columns(5)
+            for i, (step_key, provider_id) in enumerate(ai_providers.items()):
+                step_num = step_key.replace("step", "")
+                name = ai_names.get(step_key, provider_id)
+                icon = {"claude": "🟠", "gpt": "🟢", "gemini": "🔵", "grok": "⚫"}.get(provider_id, "")
+                with cols[i]:
+                    st.caption(f"S{step_num}: {icon}{name}")
 
     if markdown_report:
         st.markdown(markdown_report)
