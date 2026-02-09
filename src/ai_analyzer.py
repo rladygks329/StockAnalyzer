@@ -242,29 +242,30 @@ class GPTClient(BaseAIClient):
 
 
 class GeminiClient(BaseAIClient):
-    """Google Gemini 클라이언트"""
+    """Google Gemini 클라이언트 (google.genai SDK)"""
 
     def __init__(self):
         super().__init__("gemini")
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
 
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             raise ValueError("GEMINI_API_KEY가 설정되지 않았습니다.")
-        genai.configure(api_key=api_key)
-        self._genai = genai
+        self._client = genai.Client(api_key=api_key)
+        self._types = types
 
     def call_api(self, system_prompt, user_prompt, model, temperature, max_tokens):
-        gen_model = self._genai.GenerativeModel(
-            model_name=model,
-            system_instruction=system_prompt,
-            generation_config=self._genai.types.GenerationConfig(
+        response = self._client.models.generate_content(
+            model=model,
+            contents=user_prompt,
+            config=self._types.GenerateContentConfig(
+                system_instruction=system_prompt,
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             ),
         )
-        response = gen_model.generate_content(user_prompt)
-        return response.text
+        return response.text or ""
 
 
 class GrokClient(BaseAIClient):

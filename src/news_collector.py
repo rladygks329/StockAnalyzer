@@ -5,6 +5,7 @@
 
 import os
 import re
+import time
 import logging
 from datetime import datetime
 from typing import Optional
@@ -22,6 +23,8 @@ class NewsCollector:
     """네이버 검색 API 기반 뉴스 수집기"""
 
     NAVER_SEARCH_URL = "https://openapi.naver.com/v1/search/news.json"
+    # 요청 간 지연(초). 429 한도 완화용
+    NAVER_API_DELAY_SEC = 0.35
 
     def __init__(self):
         self.client_id = os.getenv("NAVER_CLIENT_ID", "")
@@ -83,6 +86,7 @@ class NewsCollector:
             logger.error("[뉴스 수집] 네이버 API 키가 설정되지 않았습니다.")
             return []
 
+        time.sleep(self.NAVER_API_DELAY_SEC)
         params = {
             "query": query,
             "display": min(display, 100),

@@ -393,8 +393,9 @@ class StockDataCollector:
         """
         logger.info(f"[외국인매매] {date} 기준 외국인 매매 동향 수집")
         try:
+            # pykrx investor: "외국인" (9000). "외국인합계"는 미지원 → KeyError 방지
             df = pykrx_stock.get_market_net_purchases_of_equities(
-                date, date, market="KOSPI", investor="외국인합계"
+                date, date, market="KOSPI", investor="외국인"
             )
             if df.empty:
                 return {"외국인_순매수_금액": None, "외국인_순매수_판단": "데이터 없음"}
