@@ -107,6 +107,20 @@ class StockDataCollector:
                 logger.warning(f"[데이터 수집] {date}에 대한 OHLCV 데이터가 없습니다.")
                 return pd.DataFrame()
 
+            logger.debug(f"[데이터 수집][원시] OHLCV DataFrame shape: {df.shape}")
+            logger.debug(f"[데이터 수집][원시] OHLCV 컬럼: {list(df.columns)}")
+            logger.debug(f"[데이터 수집][원시] OHLCV 상위 10행:\n{df.head(10).to_string()}")
+            logger.debug(
+                f"[데이터 수집][원시] 거래량 통계: "
+                f"min={df['거래량'].min():,}, max={df['거래량'].max():,}, "
+                f"mean={df['거래량'].mean():,.0f}, median={df['거래량'].median():,.0f}"
+            )
+            logger.debug(
+                f"[데이터 수집][원시] 거래대금 통계: "
+                f"min={df['거래대금'].min():,}, max={df['거래대금'].max():,}, "
+                f"mean={df['거래대금'].mean():,.0f}"
+            )
+
             # 종목명 추가
             df["종목명"] = df.index.map(
                 lambda x: pykrx_stock.get_market_ticker_name(x)
@@ -114,7 +128,7 @@ class StockDataCollector:
             df.index.name = "종목코드"
             df = df.reset_index()
 
-            logger.info(f"[데이터 수집] 총 {len(df)}개 종목 수집 완료")
+            logger.info(f"[데이터 수집] 총 {len(df)}개 종목 원시 데이터 수집 완료 (필터링 전)")
             return df
 
         except Exception as e:
@@ -144,6 +158,9 @@ class StockDataCollector:
             if df.empty:
                 return pd.DataFrame()
 
+            logger.debug(f"[데이터 수집][원시] 거래대금 DataFrame shape: {df.shape}")
+            logger.debug(f"[데이터 수집][원시] 거래대금 상위 10행:\n{df.head(10).to_string()}")
+
             df["종목명"] = df.index.map(
                 lambda x: pykrx_stock.get_market_ticker_name(x)
             )
@@ -169,6 +186,10 @@ class StockDataCollector:
 
             if df.empty:
                 return pd.DataFrame()
+
+            logger.debug(f"[데이터 수집][원시] 시가총액 DataFrame shape: {df.shape}")
+            logger.debug(f"[데이터 수집][원시] 시가총액 컬럼: {list(df.columns)}")
+            logger.debug(f"[데이터 수집][원시] 시가총액 상위 10행:\n{df.head(10).to_string()}")
 
             df.index.name = "종목코드"
             df = df.reset_index()
@@ -241,6 +262,16 @@ class StockDataCollector:
             & (df["거래대금"] >= self.trading_value_threshold)
         ].copy()
 
+        logger.info(
+            f"[필터링] 전체 {len(df)}개 → 필터링 후 {len(filtered)}개 "
+            f"(거래량 >= {self.volume_threshold:,} AND 거래대금 >= {self.trading_value_threshold:,})"
+        )
+        logger.debug(
+            f"[필터링][원시] 필터링된 종목 목록:\n"
+            f"{filtered[['종목코드', '종목명', '종가', '거래량', '거래대금']].to_string()}"
+            if not filtered.empty else "[필터링][원시] 필터링된 종목 없음"
+        )
+
         # 거래대금 기준 내림차순 정렬
         filtered = filtered.sort_values("거래대금", ascending=False)
 
@@ -270,6 +301,13 @@ class StockDataCollector:
         }
 
         logger.info(f"[필터링] {len(stock_list)}개 종목 필터링 완료")
+        for s in stock_list:
+            logger.debug(
+                f"[필터링][원시] {s['종목명']}({s['종목코드']}): "
+                f"종가={s['종가']:,}원, 등락률={s['등락률']}%, "
+                f"거래량={s['거래량']:,}, 거래대금={s['거래대금']:,}, "
+                f"평균거래량대비={s['평균거래량_대비_배율']}배"
+            )
         return result
 
     # ── 재무지표 안전 래퍼 ─────────────────────────────────
@@ -333,6 +371,15 @@ class StockDataCollector:
         fundamental_kospi = self._safe_get_fundamental(date, market="KOSPI")
         fundamental_kosdaq = self._safe_get_fundamental(date, market="KOSDAQ")
 
+        logger.debug(
+            f"[재무지표][원시] KOSPI fundamental shape: {fundamental_kospi.shape}, "
+            f"KOSDAQ fundamental shape: {fundamental_kosdaq.shape}"
+        )
+        if not fundamental_kospi.empty:
+            logger.debug(f"[재무지표][원시] KOSPI fundamental 상위 5행:\n{fundamental_kospi.head(5).to_string()}")
+        if not fundamental_kosdaq.empty:
+            logger.debug(f"[재무지표][원시] KOSDAQ fundamental 상위 5행:\n{fundamental_kosdaq.head(5).to_string()}")
+
         if not fundamental_kospi.empty and not fundamental_kosdaq.empty:
             fundamental_all = pd.concat([fundamental_kospi, fundamental_kosdaq])
         elif not fundamental_kospi.empty:
@@ -390,22 +437,29 @@ class StockDataCollector:
                 if per and pbr and per > 0:
                     roe = round((pbr / per) * 100, 2)
 
-                results.append(
-                    {
-                        "종목코드": ticker,
-                        "종목명": ticker_name,
-                        "PER": round(per, 2) if per else None,
-                        "PBR": round(pbr, 2) if pbr else None,
-                        "EPS": int(eps) if eps else None,
-                        "EPS_전년": int(prev_eps) if prev_eps else None,
-                        "EPS_변화율": eps_change,
-                        "ROE": roe,
-                        "배당수익률": round(div_yield, 2) if div_yield else None,
-                        "업종평균_PER": (
-                            round(sector_avg_per, 2) if sector_avg_per else None
-                        ),
-                    }
+                result_item = {
+                    "종목코드": ticker,
+                    "종목명": ticker_name,
+                    "PER": round(per, 2) if per else None,
+                    "PBR": round(pbr, 2) if pbr else None,
+                    "EPS": int(eps) if eps else None,
+                    "EPS_전년": int(prev_eps) if prev_eps else None,
+                    "EPS_변화율": eps_change,
+                    "ROE": roe,
+                    "배당수익률": round(div_yield, 2) if div_yield else None,
+                    "업종평균_PER": (
+                        round(sector_avg_per, 2) if sector_avg_per else None
+                    ),
+                }
+                logger.debug(
+                    f"[재무지표][원시] {ticker_name}({ticker}): "
+                    f"PER={result_item['PER']}, PBR={result_item['PBR']}, "
+                    f"EPS={result_item['EPS']}, EPS전년={result_item['EPS_전년']}, "
+                    f"EPS변화율={result_item['EPS_변화율']}%, ROE={result_item['ROE']}%, "
+                    f"배당수익률={result_item['배당수익률']}%, "
+                    f"업종평균PER={result_item['업종평균_PER']}"
                 )
+                results.append(result_item)
 
             except Exception as e:
                 logger.warning(f"[재무지표] {ticker} 데이터 수집 실패: {e}")
@@ -489,10 +543,18 @@ class StockDataCollector:
             kospi = pykrx_stock.get_index_ohlcv(date, date, "1001")  # 코스피 지수 코드
             kosdaq = pykrx_stock.get_index_ohlcv(date, date, "2001")  # 코스닥 지수 코드
 
+            logger.debug(f"[시장지수][원시] KOSPI 지수 DataFrame:\n{kospi.to_string()}" if not kospi.empty else "[시장지수][원시] KOSPI 데이터 없음")
+            logger.debug(f"[시장지수][원시] KOSDAQ 지수 DataFrame:\n{kosdaq.to_string()}" if not kosdaq.empty else "[시장지수][원시] KOSDAQ 데이터 없음")
+
             kospi_close = float(kospi.iloc[-1]["종가"]) if not kospi.empty else None
             kospi_change = float(kospi.iloc[-1]["등락률"]) if not kospi.empty else None
             kosdaq_close = float(kosdaq.iloc[-1]["종가"]) if not kosdaq.empty else None
             kosdaq_change = float(kosdaq.iloc[-1]["등락률"]) if not kosdaq.empty else None
+
+            logger.debug(
+                f"[시장지수][원시] 코스피: {kospi_close} (등락률 {kospi_change}%), "
+                f"코스닥: {kosdaq_close} (등락률 {kosdaq_change}%)"
+            )
 
             return {
                 "코스피": {"지수": kospi_close, "등락률": kospi_change},
@@ -524,7 +586,12 @@ class StockDataCollector:
             if df.empty:
                 return {"외국인_순매수_금액": None, "외국인_순매수_판단": "데이터 없음"}
 
+            logger.debug(f"[외국인매매][원시] DataFrame shape: {df.shape}")
+            logger.debug(f"[외국인매매][원시] 컬럼: {list(df.columns)}")
+            logger.debug(f"[외국인매매][원시] 상위 10행:\n{df.head(10).to_string()}")
+
             total_buy = df["순매수거래대금"].sum() if "순매수거래대금" in df.columns else 0
+            logger.debug(f"[외국인매매][원시] 순매수거래대금 합계: {total_buy:,}원")
 
             if total_buy > 0:
                 judgment = f"외국인 순매수 {total_buy / 100000000:,.0f}억 원"
@@ -538,6 +605,131 @@ class StockDataCollector:
         except Exception as e:
             logger.warning(f"[외국인매매] 외국인 매매 동향 수집 실패: {e}")
             return {"외국인_순매수_금액": None, "외국인_순매수_판단": "데이터 없음"}
+
+    # ── 재무등급 규칙 기반 계산 ─────────────────────────────
+    @staticmethod
+    def grade_fundamental(fund_list: list[dict]) -> list[dict]:
+        """
+        재무지표에 규칙 기반 등급(A-D)을 부여.
+
+        기존 prompt_2의 AI 분석 로직을 Python으로 이전:
+        - PER: 업종평균 대비 저평가/적정/고평가
+        - PBR: 자산가치 대비 평가
+        - ROE: 수익성 평가
+        - EPS 변화율: 성장성 평가
+        - 종합등급: A/B/C/D
+        """
+        graded = []
+        for item in fund_list:
+            g = dict(item)  # 원본 보존
+
+            per = g.get("PER")
+            pbr = g.get("PBR")
+            roe = g.get("ROE")
+            eps_change = g.get("EPS_변화율")
+            sector_per = g.get("업종평균_PER")
+
+            # ── PER 판단 ──
+            if per is None:
+                g["PER_판단"] = "데이터 없음"
+            elif per < 0:
+                g["PER_판단"] = "적자 전환 주의"
+            elif sector_per and sector_per > 0:
+                if per < sector_per * 0.7:
+                    g["PER_판단"] = "저평가"
+                elif per > sector_per * 1.3:
+                    g["PER_판단"] = "고평가"
+                else:
+                    g["PER_판단"] = "적정"
+            else:
+                g["PER_판단"] = "업종평균 없음"
+
+            # ── PBR 판단 ──
+            if pbr is None:
+                g["PBR_판단"] = "데이터 없음"
+            elif pbr < 1.0:
+                g["PBR_판단"] = "자산가치 대비 저평가 가능성"
+            elif pbr > 3.0:
+                g["PBR_판단"] = "성장 프리미엄 반영 또는 고평가"
+            else:
+                g["PBR_판단"] = "적정"
+
+            # ── ROE 판단 ──
+            if roe is None:
+                g["ROE_판단"] = "데이터 없음"
+            elif roe >= 15:
+                g["ROE_판단"] = "우수"
+            elif roe >= 10:
+                g["ROE_판단"] = "양호"
+            elif roe >= 0:
+                g["ROE_판단"] = "보통"
+            else:
+                g["ROE_판단"] = "부진"
+
+            # ── EPS 성장성 판단 ──
+            if eps_change is None:
+                g["EPS_성장"] = "데이터 없음"
+            elif eps_change > 20:
+                g["EPS_성장"] = "고성장"
+            elif eps_change > 0:
+                g["EPS_성장"] = "성장"
+            elif eps_change > -20:
+                g["EPS_성장"] = "둔화"
+            else:
+                g["EPS_성장"] = "악화"
+
+            # ── 종합등급 (A/B/C/D) ──
+            score = 0
+            # PER 점수
+            per_j = g.get("PER_판단", "")
+            if per_j == "저평가":
+                score += 2
+            elif per_j == "적정":
+                score += 1
+            elif per_j in ("고평가", "적자 전환 주의"):
+                score -= 1
+
+            # PBR 점수
+            pbr_j = g.get("PBR_판단", "")
+            if "저평가" in pbr_j:
+                score += 1
+            elif "고평가" in pbr_j:
+                score -= 1
+
+            # ROE 점수
+            roe_j = g.get("ROE_판단", "")
+            if roe_j == "우수":
+                score += 2
+            elif roe_j == "양호":
+                score += 1
+            elif roe_j == "부진":
+                score -= 1
+
+            # EPS 성장 점수
+            eps_g = g.get("EPS_성장", "")
+            if eps_g == "고성장":
+                score += 2
+            elif eps_g == "성장":
+                score += 1
+            elif eps_g == "악화":
+                score -= 1
+
+            if score >= 4:
+                g["종합등급"] = "A"
+                g["등급_설명"] = "저평가 + 수익성 양호 + 성장성"
+            elif score >= 2:
+                g["종합등급"] = "B"
+                g["등급_설명"] = "밸류에이션 적정 + 안정적 수익"
+            elif score >= 0:
+                g["종합등급"] = "C"
+                g["등급_설명"] = "고평가이나 성장 모멘텀 존재"
+            else:
+                g["종합등급"] = "D"
+                g["등급_설명"] = "고평가 + 수익성 악화"
+
+            graded.append(g)
+
+        return graded
 
     def collect_all_data(self, date: Optional[str] = None) -> dict:
         """
@@ -557,10 +749,19 @@ class StockDataCollector:
         # Step 1: 거래량/거래대금 필터링
         filtered_stocks = self.filter_stocks(date)
 
-        # Step 2: 필터링된 종목의 재무지표 수집
+        # Step 2: 필터링된 종목의 재무지표 수집 + 등급 부여
         tickers = [s["종목코드"] for s in filtered_stocks["종목_리스트"]]
         fundamental_data = (
             self.get_fundamental_data(date, tickers) if tickers else {"종목_재무지표": []}
+        )
+
+        # 규칙 기반 재무등급 계산
+        raw_fund = fundamental_data.get("종목_재무지표", [])
+        graded_fund = self.grade_fundamental(raw_fund)
+        fundamental_data["종목_재무지표"] = graded_fund
+        logger.info(
+            f"[재무등급] {len(graded_fund)}개 종목 등급 부여 완료: "
+            + ", ".join(f"{g['종목명']}={g.get('종합등급','?')}" for g in graded_fund[:5])
         )
 
         # Step 3: 시장 지수 수집
@@ -578,13 +779,37 @@ class StockDataCollector:
         }
 
         logger.info(f"[전체 수집] 데이터 수집 완료")
+        logger.debug(f"[전체 수집][원시] 수집 결과 키: {list(result.keys())}")
+        logger.debug(
+            f"[전체 수집][원시] 필터링 종목 수: {filtered_stocks.get('필터링_종목수', 0)}, "
+            f"재무지표 종목 수: {len(fundamental_data.get('종목_재무지표', []))}"
+        )
+        logger.debug(f"[전체 수집][원시] 시장 지수: {market_index}")
+        logger.debug(f"[전체 수집][원시] 외국인 매매: {foreign_trading}")
         return result
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+    import argparse as _argparse
+
+    _parser = _argparse.ArgumentParser(description="데이터 수집 단독 실행")
+    _parser.add_argument("--debug", action="store_true", help="DEBUG 레벨 로그 활성화 (원시 데이터 출력)")
+    _parser.add_argument("--date", type=str, default=None, help="분석 날짜 (YYYYMMDD)")
+    _args = _parser.parse_args()
+
+    log_level = logging.DEBUG if _args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # DEBUG 모드에서도 pykrx 내부 로거는 억제
+    if _args.debug:
+        for _name in ("pykrx", "pykrx.website", "urllib3", "urllib3.connectionpool"):
+            logging.getLogger(_name).setLevel(logging.WARNING)
+
     collector = StockDataCollector()
-    data = collector.collect_all_data()
-    print(f"필터링 종목 수: {data['필터링_결과']['필터링_종목수']}")
+    data = collector.collect_all_data(_args.date)
+    print(f"\n필터링 종목 수: {data['필터링_결과']['필터링_종목수']}")
     for stock in data["필터링_결과"]["종목_리스트"][:5]:
         print(f"  {stock['종목명']} ({stock['종목코드']}): 거래대금 {stock['거래대금']:,}")

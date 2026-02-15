@@ -1,6 +1,6 @@
 # 📊 한국 주식 시장 AI 분석 시스템 (StockAnalyzer)
 
-한국 주식 시장에서 거래량·거래대금 기준 상위 종목을 자동 필터링하고, **재무지표 분석 + 뉴스 감성 분석 + AI 종합 분석**을 수행하는 시스템입니다.
+한국 주식 시장에서 거래량·거래대금 기준 상위 종목을 자동 필터링하고, **재무지표 등급 + 뉴스 감성 분석 + AI 종합 분석**을 수행하는 시스템입니다.
 
 ## 주요 기능
 
@@ -8,36 +8,40 @@
 |------|------|
 | 📥 데이터 수집 | pykrx 기반 KRX 거래 데이터, 재무지표 자동 수집 |
 | 🔍 종목 필터링 | 거래량 1,000만주 이상 + 거래대금 100억원 이상 필터링 |
-| 💰 재무 분석 | PER, PBR, EPS, ROE 기반 밸류에이션 평가 (A~D 등급) |
-| 📰 뉴스 분석 | 네이버 검색 API 기반 뉴스 수집 + AI 감성 분석 |
-| 🤖 AI 종합 분석 | Claude API 프롬프트 체이닝으로 시장 종합 판단 |
+| 💰 재무 등급 | PER, PBR, EPS, ROE 기반 규칙기반 밸류에이션 등급 (A~D) |
+| 📰 뉴스 수집 | 네이버 검색 API 기반 종목별 뉴스 수집 |
+| 🤖 AI 종합 분석 | 뉴스 감성분석 + 시장 동향 + 종목별 시그널 판정 (1회 AI 호출) |
 | 📄 리포트 생성 | 마크다운/JSON 형태의 일일 분석 리포트 자동 생성 |
 | 📊 대시보드 | Streamlit 기반 인터랙티브 시각화 대시보드 |
 | ⏰ 자동 실행 | 매일 장 마감 후(15:40) 자동 분석 스케줄러 |
 
-## 프롬프트 체이닝 흐름
+## 3-Phase 파이프라인
 
 ```
-[매일 15:40 장 마감 후 자동 실행]
+Phase 1: 데이터 수집 (Python only, AI API 불필요)
+  ├─ pykrx → 거래량/거래대금 필터링
+  ├─ pykrx → 재무지표 수집 + Python 규칙기반 등급(A~D) 부여
+  ├─ pykrx → 시장지수/외국인매매 수집
+  └─ 네이버 API → 종목별 뉴스 수집
+  → outputs/reports/data_YYYY-MM-DD_collected.json 저장
 
-Step 1: pykrx로 원시 데이터 수집 (Python)
-    ↓
-Step 2: 프롬프트 1 → 필터링 및 정리 (AI)
-    ↓
-Step 3: pykrx로 재무지표 수집 (Python)
-    ↓
-Step 4: 프롬프트 2 → 재무지표 분석 (AI)
-    ↓
-Step 5: 네이버 검색 API로 뉴스 수집 (Python)
-    ↓
-Step 6: 프롬프트 3 → 뉴스 감성 분석 (AI) [종목별 병렬 처리]
-    ↓
-Step 7: 프롬프트 4 → 종합 분석 (AI) [모든 데이터 통합]
-    ↓
-Step 8: 프롬프트 5 → 최종 리포트 생성 (AI)
-    ↓
-[출력: 마크다운 리포트 / JSON / Streamlit 대시보드]
+Phase 2: AI 종합분석 (Step 4)
+  ├─ 원본 뉴스 + 재무등급 + 전체 데이터를 프롬프트에 주입
+  ├─ 뉴스 감성분석 + 시장 동향 + 종목별 시그널 한 번에 분석
+  └─ prompt_4_YYYY-MM-DD.txt 저장 (API 없이도 사용 가능)
+
+Phase 3: AI 리포트 생성 (Step 5)
+  ├─ 종합분석 결과를 프롬프트에 주입
+  └─ prompt_5_YYYY-MM-DD.txt 저장 (API 없이도 사용 가능)
+
+→ 최종 출력: report_YYYY-MM-DD.md / data_YYYY-MM-DD_full.json
 ```
+
+**이전 5-Step 대비 개선점:**
+- Phase 1은 AI API 없이 Python만으로 처리 (비용 절감)
+- 재무등급을 Python 규칙으로 계산 (AI 호출 불필요)
+- 뉴스 감성분석을 종합분석에 통합 (종목별 N번 → 1번 호출)
+- 중간 데이터 저장으로 Phase별 이어가기 가능
 
 ## 설치 방법
 
@@ -48,7 +52,6 @@ pip install -r requirements.txt
 
 ### 2. 환경 변수 설정
 ```bash
-# .env 파일 생성 (config/.env.example 참고)
 cp config/.env.example .env
 ```
 
@@ -56,20 +59,62 @@ cp config/.env.example .env
 
 | 키 | 필수 | 설명 | 발급처 |
 |----|------|------|--------|
-| `ANTHROPIC_API_KEY` | ✅ | Claude AI API 키 | [Anthropic Console](https://console.anthropic.com) |
-| `NAVER_CLIENT_ID` | ✅ | 네이버 검색 API 클라이언트 ID | [Naver Developers](https://developers.naver.com) |
-| `NAVER_CLIENT_SECRET` | ✅ | 네이버 검색 API 시크릿 | [Naver Developers](https://developers.naver.com) |
+| `ANTHROPIC_API_KEY` | AI 분석 시 | Claude AI API 키 | [Anthropic Console](https://console.anthropic.com) |
+| `OPENAI_API_KEY` | 선택 | GPT API 키 | [OpenAI Platform](https://platform.openai.com) |
+| `GEMINI_API_KEY` | 선택 | Gemini API 키 | [Google AI Studio](https://aistudio.google.com) |
+| `GROK_API_KEY` | 선택 | Grok API 키 | [xAI Console](https://console.x.ai) |
+| `NAVER_CLIENT_ID` | 뉴스 수집 시 | 네이버 검색 API | [Naver Developers](https://developers.naver.com) |
+| `NAVER_CLIENT_SECRET` | 뉴스 수집 시 | 네이버 검색 API | [Naver Developers](https://developers.naver.com) |
+
+**선택적 설정:**
+
+| 키 | 기본값 | 설명 |
+|----|--------|------|
+| `AI_PROVIDER` | `claude` | 기본 AI 프로바이더 |
+| `STEP4_PROVIDER` | (기본값) | Step 4 종합분석 프로바이더 |
+| `STEP5_PROVIDER` | (기본값) | Step 5 리포트 프로바이더 |
+| `SHOW_STEP_PROMPTS` | `false` | Step 4/5 프롬프트 콘솔 출력 |
+| `ANALYZE_BY_API` | `true` | API 호출 여부 (false면 프롬프트만 저장) |
 
 ## 사용법
 
-### 즉시 1회 분석 실행
+### 전체 파이프라인 실행
 ```bash
-python main.py
+python main.py                    # 최근 거래일 기준
+python main.py --date 20260213    # 특정 날짜
 ```
 
-### 특정 날짜 분석
+### Phase별 실행 (스텝별 이어가기)
+
 ```bash
-python main.py --date 20260206
+# Phase 1만: 데이터 수집 (AI API 불필요)
+python main.py --step collect --date 20260213
+
+# 저장된 데이터에서 AI 분석 이어가기
+python main.py --step analyze --from-data outputs/reports/data_2026-02-13_collected.json
+
+# API 호출 없이 프롬프트만 저장 (다른 AI에 직접 입력용)
+python main.py --step analyze --from-data outputs/reports/data_2026-02-13_collected.json --prompt-only
+```
+
+### Step별 프로바이더 지정
+
+```bash
+# 종합분석은 Gemini, 리포트는 Claude
+python main.py --step4 gemini --step5 claude
+
+# 전체 Step을 GPT로
+python main.py --provider gpt
+```
+
+### 프롬프트 확인/디버깅
+
+```bash
+# 프롬프트를 콘솔에 출력 + 정상 분석
+python main.py --show-prompts
+
+# 프롬프트만 저장, API 호출 스킵
+python main.py --prompt-only
 ```
 
 ### 매일 자동 실행 (스케줄러)
@@ -83,6 +128,23 @@ python main.py --schedule --time 16:00   # 시각 지정
 streamlit run app.py
 ```
 
+## CLI 옵션 전체
+
+| 옵션 | 설명 | 기본값 |
+|------|------|--------|
+| `--step` | 실행할 Phase (`collect`, `analyze`, `all`) | `all` |
+| `--from-data` | 저장된 collected JSON 파일 경로 | - |
+| `--prompt-only` | API 호출 없이 프롬프트만 파일로 저장 | `false` |
+| `--provider` | 글로벌 AI 프로바이더 | `.env` 설정 |
+| `--step4` | Step 4 (종합분석) 프로바이더 | 글로벌 설정 |
+| `--step5` | Step 5 (리포트) 프로바이더 | 글로벌 설정 |
+| `--date` | 분석 날짜 (YYYYMMDD) | 최근 거래일 |
+| `--schedule` | 스케줄 모드 | `false` |
+| `--time` | 스케줄 실행 시각 (HH:MM) | `15:40` |
+| `--log-level` | 로깅 레벨 | `INFO` |
+| `--show-prompts` | Step 4/5 프롬프트 콘솔 출력 | `false` |
+| `--no-api` | `--prompt-only`와 동일 (하위 호환) | `false` |
+
 ## 프로젝트 구조
 
 ```
@@ -91,25 +153,33 @@ StockAnalyzer/
 │   ├── .env.example              # 환경 변수 예시
 │   └── prompts/
 │       ├── system_prompt.txt     # 시스템 프롬프트
-│       ├── prompt_1_filtering.txt   # 거래량/거래대금 필터링
-│       ├── prompt_2_fundamental.txt # 재무지표 분석
-│       ├── prompt_3_news.txt        # 뉴스 감성 분석
-│       ├── prompt_4_analysis.txt    # 종합 분석
-│       └── prompt_5_report.txt      # 리포트 생성
+│       ├── prompt_4_analysis.txt # 종합 분석 (뉴스 감성분석 통합)
+│       └── prompt_5_report.txt   # 리포트 생성
 ├── src/
 │   ├── __init__.py
-│   ├── data_collector.py         # pykrx 데이터 수집
+│   ├── data_collector.py         # pykrx 데이터 수집 + 재무등급 계산
 │   ├── news_collector.py         # 네이버 API 뉴스 수집
-│   ├── ai_analyzer.py            # Claude API 프롬프트 체이닝
+│   ├── ai_analyzer.py            # AI 2-Step 파이프라인 (Step 4 + 5)
 │   ├── report_generator.py       # 리포트 포맷팅 및 저장
-│   └── scheduler.py              # 일일 자동 실행 스케줄러
+│   ├── scheduler.py              # 일일 자동 실행 스케줄러
+│   └── test_providers.py         # AI 프로바이더 연결 테스트
 ├── outputs/
-│   └── reports/                  # 일별 리포트 저장
+│   └── reports/                  # 일별 리포트/데이터/프롬프트 저장
 ├── app.py                        # Streamlit 대시보드
 ├── main.py                       # CLI 엔트리포인트
 ├── requirements.txt
 └── README.md
 ```
+
+## 출력 파일
+
+| 파일 | 설명 |
+|------|------|
+| `data_YYYY-MM-DD_collected.json` | Phase 1 수집 데이터 (이어가기 가능) |
+| `prompt_4_YYYY-MM-DD.txt` | 데이터 주입된 Step 4 프롬프트 |
+| `prompt_5_YYYY-MM-DD.txt` | 데이터 주입된 Step 5 프롬프트 |
+| `report_YYYY-MM-DD.md` | 최종 마크다운 리포트 |
+| `data_YYYY-MM-DD_full.json` | 전체 분석 데이터 (JSON) |
 
 ## 분석 출력 형식
 

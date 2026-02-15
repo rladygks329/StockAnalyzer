@@ -1,14 +1,19 @@
 """
 AI 분석 모듈
 멀티 프로바이더(Claude, GPT, Gemini, Grok) 지원 + Step별 프로바이더 분리
+
+단순화된 2-Step 파이프라인:
+  Step 4: 종합분석 (뉴스 감성분석 통합)
+  Step 5: 리포트 생성
 """
 
 import os
 import json
 import re
 import logging
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -21,16 +26,14 @@ logger = logging.getLogger(__name__)
 # 프로젝트 루트 디렉토리
 PROJECT_ROOT = Path(__file__).parent.parent
 PROMPTS_DIR = PROJECT_ROOT / "config" / "prompts"
+REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
 
 # ============================================================
-# Step 정의
+# Step 정의 (AI가 필요한 Step만)
 # ============================================================
 
 STEP_DEFINITIONS = {
-    1: {"name": "필터링", "desc": "거래량/거래대금 필터링 및 데이터 정리", "env": "STEP1_PROVIDER", "type": "data"},
-    2: {"name": "재무분석", "desc": "재무지표 분석 (PER/PBR/EPS/ROE)", "env": "STEP2_PROVIDER", "type": "data"},
-    3: {"name": "뉴스분석", "desc": "뉴스 감성 분석", "env": "STEP3_PROVIDER", "type": "data"},
-    4: {"name": "종합분석", "desc": "시장 동향 종합 분석", "env": "STEP4_PROVIDER", "type": "analysis"},
+    4: {"name": "종합분석", "desc": "뉴스 감성분석 + 시장 동향 종합 분석", "env": "STEP4_PROVIDER", "type": "analysis"},
     5: {"name": "리포트", "desc": "최종 리포트 생성", "env": "STEP5_PROVIDER", "type": "analysis"},
 }
 
@@ -94,10 +97,7 @@ def get_provider_display_name(provider_id: str) -> str:
 
 @dataclass
 class StepProviderConfig:
-    """Step별 프로바이더 설정"""
-    step1: Optional[str] = None  # 필터링
-    step2: Optional[str] = None  # 재무분석
-    step3: Optional[str] = None  # 뉴스분석
+    """Step별 프로바이더 설정 (Step 4, 5만)"""
     step4: Optional[str] = None  # 종합분석
     step5: Optional[str] = None  # 리포트
 
@@ -107,17 +107,15 @@ class StepProviderConfig:
 
     def set(self, step: int, provider: Optional[str]):
         """특정 Step의 프로바이더 설정"""
-        setattr(self, f"step{step}", provider)
+        if hasattr(self, f"step{step}"):
+            setattr(self, f"step{step}", provider)
 
     def to_dict(self) -> dict:
-        return {f"step{i}": self.get(i) for i in range(1, 6)}
+        return {f"step{i}": self.get(i) for i in (4, 5)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepProviderConfig":
         return cls(
-            step1=d.get("step1"),
-            step2=d.get("step2"),
-            step3=d.get("step3"),
             step4=d.get("step4"),
             step5=d.get("step5"),
         )
@@ -135,8 +133,7 @@ class StepProviderConfig:
     @classmethod
     def all_same(cls, provider: str) -> "StepProviderConfig":
         """모든 Step을 동일 프로바이더로 설정"""
-        return cls(step1=provider, step2=provider, step3=provider,
-                   step4=provider, step5=provider)
+        return cls(step4=provider, step5=provider)
 
 
 def get_step_provider_summary(step_config: StepProviderConfig, fallback: str) -> dict:
@@ -256,16 +253,39 @@ class GeminiClient(BaseAIClient):
         self._types = types
 
     def call_api(self, system_prompt, user_prompt, model, temperature, max_tokens):
+        config_dict = {
+            "system_instruction": system_prompt,
+            "temperature": temperature,
+        }
+        if max_tokens and max_tokens > 0:
+            config_dict["max_output_tokens"] = max(max_tokens, 30000)
+
         response = self._client.models.generate_content(
             model=model,
             contents=user_prompt,
-            config=self._types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-            ),
+            config=self._types.GenerateContentConfig(**config_dict),
         )
-        return response.text or ""
+
+        text = None
+        try:
+            if hasattr(response, 'text'):
+                text = response.text
+        except (ValueError, AttributeError) as e:
+            logger.debug(f"Gemini response.text 접근 실패: {e}")
+
+        if not text and hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            if hasattr(candidate, 'content') and candidate.content:
+                parts = getattr(candidate.content, 'parts', None)
+                if parts:
+                    text_parts = []
+                    for part in parts:
+                        if hasattr(part, 'text') and part.text:
+                            text_parts.append(part.text)
+                    if text_parts:
+                        text = ''.join(text_parts)
+
+        return text or ""
 
 
 class GrokClient(BaseAIClient):
@@ -342,23 +362,20 @@ def create_ai_client(provider: Optional[str] = None) -> BaseAIClient:
 
 
 # ============================================================
-# AI 분석 엔진 (Step별 프로바이더 분리)
+# AI 분석 엔진 (2-Step 파이프라인)
 # ============================================================
 
 
 class AIAnalyzer:
-    """Step별 멀티 프로바이더 주식 분석 엔진"""
+    """Step별 멀티 프로바이더 주식 분석 엔진 (Step 4: 종합분석, Step 5: 리포트)"""
 
     def __init__(
         self,
         provider: Optional[str] = None,
         step_config: Optional[StepProviderConfig] = None,
+        show_prompts: Optional[bool] = None,
+        analyze_by_api: Optional[bool] = None,
     ):
-        """
-        Args:
-            provider: 글로벌 기본 프로바이더 (None이면 .env의 AI_PROVIDER)
-            step_config: Step별 프로바이더 설정 (None이면 .env에서 로드)
-        """
         self.default_provider = (
             provider or os.getenv("AI_PROVIDER", "claude").lower().strip()
         )
@@ -366,7 +383,16 @@ class AIAnalyzer:
         self.client_pool = ClientPool()
         self.system_prompt = self._load_prompt("system_prompt.txt")
 
-        # Step별 설정 로그 출력
+        if show_prompts is None:
+            self.show_prompts = os.getenv("SHOW_STEP_PROMPTS", "false").lower() in ("true", "1", "yes")
+        else:
+            self.show_prompts = show_prompts
+
+        if analyze_by_api is None:
+            self._analyze_by_api = os.getenv("ANALYZE_BY_API", "true").lower() in ("true", "1", "yes")
+        else:
+            self._analyze_by_api = analyze_by_api
+
         summary = get_step_provider_summary(self.step_config, self.default_provider)
         logger.info("[AI 분석] Step별 프로바이더 설정:")
         for step_num, info in summary.items():
@@ -382,21 +408,12 @@ class AIAnalyzer:
     def _get_step_info(self, step: int) -> dict:
         """해당 Step의 모델/온도 정보 반환"""
         client = self._get_step_client(step)
-        step_type = STEP_DEFINITIONS[step]["type"]
-        if step_type == "data":
-            return {
-                "client": client,
-                "model": client.model_data,
-                "temperature": client.temp_data,
-                "max_tokens": 4096,
-            }
-        else:  # analysis
-            return {
-                "client": client,
-                "model": client.model_analysis,
-                "temperature": client.temp_analysis,
-                "max_tokens": 8192,
-            }
+        return {
+            "client": client,
+            "model": client.model_analysis,
+            "temperature": client.temp_analysis,
+            "max_tokens": 8192,
+        }
 
     @staticmethod
     def _load_prompt(filename: str) -> str:
@@ -412,20 +429,37 @@ class AIAnalyzer:
         client: BaseAIClient = info["client"]
         step_def = STEP_DEFINITIONS[step]
 
+        print(
+            f"    API 호출 중... Step {step} ({step_def['name']}) "
+            f"<- {client.provider_name} / {info['model']}",
+            flush=True,
+        )
         logger.info(
-            f"  → Step {step} ({step_def['name']}): "
+            f"  -> Step {step} ({step_def['name']}): "
             f"{client.provider_name} / {info['model']}"
         )
 
+        t0 = time.time()
         try:
-            return client.call_api(
+            result = client.call_api(
                 system_prompt=self.system_prompt,
                 user_prompt=user_prompt,
                 model=info["model"],
                 temperature=info["temperature"],
                 max_tokens=info["max_tokens"],
             )
+            elapsed = time.time() - t0
+            print(
+                f"    Step {step} ({step_def['name']}) 완료 ({elapsed:.1f}초)",
+                flush=True,
+            )
+            return result
         except Exception as e:
+            elapsed = time.time() - t0
+            print(
+                f"    Step {step} ({step_def['name']}) 실패 ({elapsed:.1f}초): {e}",
+                flush=True,
+            )
             logger.error(
                 f"[AI 분석] Step {step} ({client.provider_name}) API 호출 실패: {e}"
             )
@@ -446,116 +480,45 @@ class AIAnalyzer:
             return json.loads(text[start:end])
         except (ValueError, json.JSONDecodeError):
             logger.warning("[AI 분석] JSON 파싱 실패, 원본 텍스트 반환")
+            logger.info("원본 텍스트: " + text)
             return {"raw_response": text}
 
-    # ========== 프롬프트 체이닝 메서드 ==========
+    @staticmethod
+    def _save_prompt_file(prompt: str, filename: str) -> str:
+        """프롬프트를 파일로 저장"""
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        filepath = REPORTS_DIR / filename
+        filepath.write_text(prompt, encoding="utf-8")
+        logger.info(f"[AI 분석] 프롬프트 저장: {filepath}")
+        return str(filepath)
 
-    def analyze_filtering(self, filtered_data: dict) -> dict:
-        """프롬프트 1: 거래량/거래대금 필터링 분석"""
-        logger.info("[AI 분석] 프롬프트 1: 필터링 및 데이터 정리 시작")
+    # ========== 프롬프트 빌더 ==========
 
-        prompt_template = self._load_prompt("prompt_1_filtering.txt")
-        raw_table = self._format_data_table(filtered_data)
-
-        prompt = prompt_template.replace("{날짜}", filtered_data.get("기준일", ""))
-        prompt = prompt.replace("{raw_data_table}", raw_table)
-
-        response = self._call_step_api(step=1, user_prompt=prompt)
-        result = self._extract_json(response)
-
-        logger.info(
-            f"[AI 분석] 프롬프트 1 완료: {result.get('필터링_종목수', 'N/A')}개 종목"
-        )
-        return result
-
-    def analyze_fundamental(self, fundamental_data: dict) -> dict:
-        """프롬프트 2: 재무지표 분석"""
-        logger.info("[AI 분석] 프롬프트 2: 재무지표 분석 시작")
-
-        prompt_template = self._load_prompt("prompt_2_fundamental.txt")
-        table = json.dumps(fundamental_data, ensure_ascii=False, indent=2)
-        prompt = prompt_template.replace("{fundamental_data_table}", table)
-
-        response = self._call_step_api(step=2, user_prompt=prompt)
-        result = self._extract_json(response)
-
-        logger.info(
-            f"[AI 분석] 프롬프트 2 완료: "
-            f"{len(result.get('종목_분석', []))}개 종목 분석"
-        )
-        return result
-
-    def analyze_news(self, news_data: dict) -> dict:
-        """프롬프트 3: 뉴스 분석 및 감성 평가 (단일 종목)"""
-        stock_name = news_data.get("종목명", "")
-        stock_code = news_data.get("종목코드", "")
-        logger.info(f"[AI 분석] 프롬프트 3: {stock_name}({stock_code}) 뉴스 분석 시작")
-
-        prompt_template = self._load_prompt("prompt_3_news.txt")
-        news_list_text = self._format_news_list(news_data.get("뉴스_리스트", []))
-
-        prompt = prompt_template.replace("{종목명}", stock_name)
-        prompt = prompt.replace("{종목코드}", stock_code)
-        prompt = prompt.replace("{N}", str(news_data.get("수집_뉴스수", 0)))
-        prompt = prompt.replace("{news_list}", news_list_text)
-
-        response = self._call_step_api(step=3, user_prompt=prompt)
-        result = self._extract_json(response)
-
-        logger.info(
-            f"[AI 분석] 프롬프트 3 완료: {stock_name} "
-            f"뉴스 스코어 {result.get('종합_뉴스스코어', 'N/A')}"
-        )
-        return result
-
-    def analyze_all_news(self, all_news_data: list[dict]) -> list[dict]:
-        """프롬프트 3: 모든 종목 뉴스 분석"""
-        logger.info(f"[AI 분석] {len(all_news_data)}개 종목 뉴스 분석 시작")
-        results = []
-        for news_data in all_news_data:
-            try:
-                result = self.analyze_news(news_data)
-                results.append(result)
-            except Exception as e:
-                logger.error(
-                    f"[AI 분석] {news_data.get('종목명', '')} 뉴스 분석 실패: {e}"
-                )
-                results.append(
-                    {
-                        "종목명": news_data.get("종목명", ""),
-                        "종목코드": news_data.get("종목코드", ""),
-                        "분석_뉴스수": 0,
-                        "뉴스_분석": [],
-                        "종합_뉴스스코어": 0,
-                        "뉴스_요약": "뉴스 분석 실패",
-                    }
-                )
-        return results
-
-    def analyze_comprehensive(
-        self,
-        filtered_stocks: dict,
-        fundamental_analysis: dict,
-        news_analysis: list[dict],
-        market_index: dict,
-        foreign_trading: dict,
-    ) -> dict:
-        """프롬프트 4: 시장 동향 종합 분석"""
-        logger.info("[AI 분석] 프롬프트 4: 종합 분석 시작")
-
+    def build_comprehensive_prompt(self, collected_data: dict) -> str:
+        """
+        Step 4 종합분석 프롬프트 빌드.
+        수집된 전체 데이터(필터링, 재무등급, 원본 뉴스, 시장지수, 외국인매매)를
+        prompt_4_analysis.txt 템플릿에 주입하여 완성된 프롬프트 문자열을 리턴.
+        """
         prompt_template = self._load_prompt("prompt_4_analysis.txt")
+
+        filtered_stocks = collected_data.get("필터링_결과", {})
+        fundamental_data = collected_data.get("재무지표", {})
+        news_data = collected_data.get("뉴스_데이터", [])
+        market_index = collected_data.get("시장_지수", {})
+        foreign_trading = collected_data.get("외국인_매매", {})
 
         prompt = prompt_template.replace(
             "{filtered_stocks_json}",
             json.dumps(filtered_stocks, ensure_ascii=False, indent=2),
         )
         prompt = prompt.replace(
-            "{fundamental_analysis_json}",
-            json.dumps(fundamental_analysis, ensure_ascii=False, indent=2),
+            "{fundamental_graded_json}",
+            json.dumps(fundamental_data, ensure_ascii=False, indent=2),
         )
         prompt = prompt.replace(
-            "{news_analysis_json}",
-            json.dumps(news_analysis, ensure_ascii=False, indent=2),
+            "{raw_news_json}",
+            json.dumps(news_data, ensure_ascii=False, indent=2),
         )
 
         kospi = market_index.get("코스피", {})
@@ -569,67 +532,117 @@ class AIAnalyzer:
             "{foreign_flow}", foreign_trading.get("외국인_순매수_판단", "데이터 없음")
         )
 
-        response = self._call_step_api(step=4, user_prompt=prompt)
-        result = self._extract_json(response)
+        return prompt
 
-        logger.info("[AI 분석] 프롬프트 4 종합 분석 완료")
-        return result
-
-    def generate_report(self, final_analysis: dict) -> str:
-        """프롬프트 5: 최종 리포트 생성"""
-        logger.info("[AI 분석] 프롬프트 5: 최종 리포트 생성 시작")
-
+    def build_report_prompt(self, comprehensive_analysis: dict) -> str:
+        """
+        Step 5 리포트 프롬프트 빌드.
+        종합분석 결과를 prompt_5_report.txt 템플릿에 주입하여 완성된 프롬프트 문자열을 리턴.
+        """
         prompt_template = self._load_prompt("prompt_5_report.txt")
         prompt = prompt_template.replace(
             "{final_analysis_json}",
-            json.dumps(final_analysis, ensure_ascii=False, indent=2),
+            json.dumps(comprehensive_analysis, ensure_ascii=False, indent=2),
         )
+        return prompt
+
+    # ========== 분석 실행 ==========
+
+    def analyze_comprehensive(self, collected_data: dict, date: str) -> dict:
+        """Step 4: 종합분석 (뉴스 감성분석 통합) 실행"""
+        logger.info("[AI 분석] Step 4: 종합 분석 시작")
+
+        prompt = self.build_comprehensive_prompt(collected_data)
+
+        # 프롬프트 파일 저장
+        formatted_date = self._format_date(date)
+        self._save_prompt_file(prompt, f"prompt_4_{formatted_date}.txt")
+
+        if self.show_prompts:
+            print(f"\n{'─'*55}", flush=True)
+            print("Step 4 프롬프트:", flush=True)
+            print(f"{'─'*55}", flush=True)
+            print(prompt[:2000] + "\n... (이하 생략)" if len(prompt) > 2000 else prompt, flush=True)
+            print(f"{'─'*55}\n", flush=True)
+
+        if not self._analyze_by_api:
+            logger.info("[AI 분석] Step 4: API 호출 스킵 (프롬프트만 저장)")
+            return {
+                "시장_전체_판단": "API 호출 스킵됨 (--prompt-only 모드)",
+                "주요_이슈": [],
+                "종목별_종합_평가": [],
+            }
+
+        response = self._call_step_api(step=4, user_prompt=prompt)
+        result = self._extract_json(response)
+
+        logger.info("[AI 분석] Step 4 종합 분석 완료")
+        return result
+
+    def generate_report(self, comprehensive_analysis: dict, date: str) -> str:
+        """Step 5: 최종 리포트 생성"""
+        logger.info("[AI 분석] Step 5: 최종 리포트 생성 시작")
+
+        prompt = self.build_report_prompt(comprehensive_analysis)
+
+        # 프롬프트 파일 저장
+        formatted_date = self._format_date(date)
+        self._save_prompt_file(prompt, f"prompt_5_{formatted_date}.txt")
+
+        if self.show_prompts:
+            print(f"\n{'─'*55}", flush=True)
+            print("Step 5 프롬프트:", flush=True)
+            print(f"{'─'*55}", flush=True)
+            print(prompt[:2000] + "\n... (이하 생략)" if len(prompt) > 2000 else prompt, flush=True)
+            print(f"{'─'*55}\n", flush=True)
+
+        if not self._analyze_by_api:
+            logger.info("[AI 분석] Step 5: API 호출 스킵 (프롬프트만 저장)")
+            return "# 리포트 생성 스킵됨\n\n--prompt-only 모드로 실행되었습니다. 저장된 프롬프트 파일을 AI에 직접 입력하여 리포트를 생성하세요."
 
         report = self._call_step_api(step=5, user_prompt=prompt)
 
-        logger.info("[AI 분석] 프롬프트 5 최종 리포트 생성 완료")
+        logger.info("[AI 분석] Step 5 최종 리포트 생성 완료")
         return report
 
     def run_full_analysis(self, collected_data: dict) -> dict:
         """
-        전체 프롬프트 체이닝 실행 (Step별 프로바이더 사용)
+        전체 AI 분석 실행 (Step 4 + Step 5)
 
         Returns:
-            dict: 전체 분석 결과 + Step별 프로바이더 정보
+            dict: 분석 결과 + Step별 프로바이더 정보
         """
         summary = get_step_provider_summary(self.step_config, self.default_provider)
+        date = collected_data.get("기준일", "")
 
         logger.info("=" * 60)
-        logger.info("[AI 분석] 전체 프롬프트 체이닝 시작")
+        logger.info("[AI 분석] 전체 AI 분석 시작 (Step 4 + Step 5)")
         for s, info in summary.items():
             logger.info(f"  Step {s} ({info['name']}): {info['provider_name']}")
         logger.info("=" * 60)
 
-        # Step 1: 필터링 분석
-        filtered_data = collected_data["필터링_결과"]
-        filtered_analysis = self.analyze_filtering(filtered_data)
+        pipeline_start = time.time()
 
-        # Step 2: 재무지표 분석
-        fundamental_data = collected_data["재무지표"]
-        fundamental_analysis = self.analyze_fundamental(fundamental_data)
-
-        # Step 3: 뉴스 분석
-        news_data = collected_data.get("뉴스_데이터", [])
-        news_analysis = self.analyze_all_news(news_data) if news_data else []
-
-        # Step 4: 종합 분석
-        comprehensive_analysis = self.analyze_comprehensive(
-            filtered_stocks=filtered_analysis,
-            fundamental_analysis=fundamental_analysis,
-            news_analysis=news_analysis,
-            market_index=collected_data.get("시장_지수", {}),
-            foreign_trading=collected_data.get("외국인_매매", {}),
-        )
+        # Step 4: 종합 분석 (뉴스 감성분석 통합)
+        print(f"\n{'='*55}", flush=True)
+        print(f"  [Step 4] 종합 분석 (뉴스 감성분석 + 시장 동향)", flush=True)
+        print(f"{'='*55}", flush=True)
+        comprehensive_analysis = self.analyze_comprehensive(collected_data, date)
 
         # Step 5: 최종 리포트 생성
-        report_markdown = self.generate_report(comprehensive_analysis)
+        print(f"\n{'='*55}", flush=True)
+        print(f"  [Step 5] 최종 리포트 생성", flush=True)
+        print(f"{'='*55}", flush=True)
+        report_markdown = self.generate_report(comprehensive_analysis, date)
 
-        # Step별 프로바이더 정보 기록
+        pipeline_elapsed = time.time() - pipeline_start
+        print(f"\n{'='*55}", flush=True)
+        print(
+            f"  전체 AI 분석 완료! (총 {pipeline_elapsed:.1f}초)",
+            flush=True,
+        )
+        print(f"{'='*55}", flush=True)
+
         step_providers = {
             f"step{s}": info["provider"]
             for s, info in summary.items()
@@ -643,51 +656,21 @@ class AIAnalyzer:
             "ai_providers": step_providers,
             "ai_provider_names": step_provider_names,
             "ai_default_provider": self.default_provider,
-            "filtered_analysis": filtered_analysis,
-            "fundamental_analysis": fundamental_analysis,
-            "news_analysis": news_analysis,
+            "filtered_analysis": collected_data.get("필터링_결과", {}),
+            "fundamental_analysis": collected_data.get("재무지표", {}),
+            "news_analysis": [],  # 뉴스 감성분석은 Step 4에 통합됨
             "comprehensive_analysis": comprehensive_analysis,
             "report_markdown": report_markdown,
         }
 
-        logger.info("[AI 분석] 전체 프롬프트 체이닝 완료")
+        logger.info("[AI 분석] 전체 AI 분석 완료")
         return result
 
-    # ========== 유틸리티 메서드 ==========
-
     @staticmethod
-    def _format_data_table(data: dict) -> str:
-        """필터링 데이터를 읽기 좋은 테이블 형태로 변환"""
-        stocks = data.get("종목_리스트", [])
-        if not stocks:
-            return "필터링된 종목이 없습니다."
-
-        lines = [
-            "| 종목코드 | 종목명 | 종가 | 등락률(%) | 거래량 | 거래대금 | 평균거래량대비 |",
-            "|----------|--------|------|-----------|--------|----------|---------------|",
-        ]
-        for s in stocks:
-            ratio = s.get("평균거래량_대비_배율")
-            ratio_str = f"{ratio}배" if ratio else "N/A"
-            lines.append(
-                f"| {s['종목코드']} | {s['종목명']} | "
-                f"{s['종가']:,} | {s['등락률']} | "
-                f"{s['거래량']:,} | {s['거래대금']:,} | {ratio_str} |"
-            )
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_news_list(news_list: list[dict]) -> str:
-        """뉴스 리스트를 텍스트로 변환"""
-        if not news_list:
-            return "수집된 뉴스가 없습니다."
-
-        lines = []
-        for i, news in enumerate(news_list, 1):
-            lines.append(f"### 뉴스 {i}")
-            lines.append(f"- **제목**: {news.get('제목', 'N/A')}")
-            lines.append(f"- **날짜**: {news.get('날짜', 'N/A')}")
-            lines.append(f"- **요약**: {news.get('요약', 'N/A')}")
-            lines.append(f"- **출처**: {news.get('출처', 'N/A')}")
-            lines.append("")
-        return "\n".join(lines)
+    def _format_date(date: str) -> str:
+        """날짜 형식 변환 (YYYYMMDD → YYYY-MM-DD)"""
+        if "-" in date:
+            return date
+        if len(date) == 8:
+            return f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+        return date

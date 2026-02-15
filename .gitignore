@@ -35,5 +35,6 @@ outputs/analysis.log
 
 # Jupyter
 .ipynb_checkpoints/
-
+CLAUDE.md
+.claude/
 outputs

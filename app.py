@@ -216,16 +216,13 @@ with st.sidebar:
 
     # StepProviderConfig 구성
     sidebar_step_config = StepProviderConfig(
-        step1=step_selections.get(1),
-        step2=step_selections.get(2),
-        step3=step_selections.get(3),
         step4=step_selections.get(4),
         step5=step_selections.get(5),
     )
 
     # 설정 요약
     summary_lines = []
-    for step_num in range(1, 6):
+    for step_num in STEP_DEFINITIONS:
         p = step_selections.get(step_num) or selected_default
         icon = provider_icons.get(p, "")
         summary_lines.append(f"S{step_num}: {icon}{p}")
@@ -233,7 +230,7 @@ with st.sidebar:
 
     # 분석 실행에 필요한 프로바이더 키 확인
     needed_providers = set()
-    for step_num in range(1, 6):
+    for step_num in STEP_DEFINITIONS:
         needed_providers.add(step_selections.get(step_num) or selected_default)
     missing_keys = [
         p for p in needed_providers
@@ -282,7 +279,7 @@ with st.sidebar:
     st.markdown("---")
     st.caption("💡 매일 15:40에 자동 분석 실행")
     st.caption("CLI: `python main.py --schedule`")
-    st.caption("CLI: `python main.py --step1 gemini --step4 claude`")
+    st.caption("CLI: `python main.py --step4 gemini --step5 claude`")
 
 
 # ===== 메인 콘텐츠 =====
@@ -618,7 +615,7 @@ with tab_report:
         ai_providers = report_data.get("ai_providers", {})
         ai_names = report_data.get("ai_provider_names", {})
         if ai_providers:
-            cols = st.columns(5)
+            cols = st.columns(len(ai_providers) or 1)
             for i, (step_key, provider_id) in enumerate(ai_providers.items()):
                 step_num = step_key.replace("step", "")
                 name = ai_names.get(step_key, provider_id)
