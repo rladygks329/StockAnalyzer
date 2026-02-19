@@ -6,13 +6,16 @@
   Phase 2 (analyze): AI 종합분석 (Step 4 - 뉴스 감성분석 통합)
   Phase 3 (analyze): AI 리포트 생성 (Step 5)
 
+기본 동작: python main.py → collect → analyze까지 실행하되 API 호출 없이 프롬프트만 저장.
+API로 실제 분석을 수행하려면 --api 옵션을 사용하세요.
+
 사용법:
-    python main.py                                          # 전체 파이프라인
+    python main.py                                          # 전체 파이프라인 (기본: 프롬프트만 저장)
+    python main.py --api                                    # API 호출로 실제 분석 수행
     python main.py --step collect --date 20260213           # Phase 1만
     python main.py --step analyze --from-data data.json     # 저장된 데이터에서 이어가기
-    python main.py --prompt-only                            # API 없이 프롬프트만 저장
     python main.py --step4 gemini --step5 claude            # Step별 프로바이더
-    python main.py --schedule                               # 매일 자동 실행
+    python main.py --schedule --api                         # 매일 자동 실행 (API 호출)
     streamlit run app.py                                    # 대시보드
 """
 
@@ -41,7 +44,7 @@ from src.ai_analyzer import (
     get_available_providers,
     get_step_provider_summary,
 )
-from src.report_generator import ReportGenerator
+from src.report_generator import ReportGenerator, get_report_date_dir
 from src.scheduler import AnalysisScheduler
 
 
@@ -286,12 +289,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 사용 예시:
-  python main.py                                          전체 파이프라인
+  python main.py                                          전체 파이프라인 (기본: 프롬프트만 저장)
+  python main.py --api                                    API 호출로 실제 분석 수행
   python main.py --step collect --date 20260213           데이터 수집만
   python main.py --step analyze --from-data data.json     저장된 데이터에서 분석
-  python main.py --prompt-only                            프롬프트만 저장 (API 미호출)
   python main.py --step4 gemini --step5 claude            Step별 프로바이더
-  python main.py --schedule                               매일 자동 실행
+  python main.py --schedule --api                         매일 자동 실행 (API 호출)
   streamlit run app.py                                    Streamlit 대시보드
         """,
     )
@@ -310,10 +313,16 @@ def main():
         help="저장된 collected JSON 파일 경로 (--step analyze와 함께 사용)",
     )
     parser.add_argument(
+        "--api",
+        action="store_true",
+        dest="api",
+        help="AI API 호출 수행 (미지정 시 기본은 프롬프트만 저장)",
+    )
+    parser.add_argument(
         "--prompt-only",
         action="store_true",
         dest="prompt_only",
-        help="API 호출 없이 데이터 주입된 프롬프트만 파일로 저장",
+        help="API 호출 없이 프롬프트만 저장 (기본 동작과 동일, 명시적 지정용)",
     )
     parser.add_argument(
         "--provider",
@@ -375,7 +384,8 @@ def main():
     args = parser.parse_args()
     setup_logging(args.log_level)
 
-    prompt_only = args.prompt_only or args.no_api
+    # 기본: 프롬프트만 저장. --api 지정 시에만 API 호출.
+    prompt_only = not args.api
 
     # Step별 프로바이더 설정
     step_args = (args.step4, args.step5)
@@ -414,8 +424,9 @@ def main():
         filtered_count = collected_data["필터링_결과"]["필터링_종목수"]
         print(f"\n데이터 수집 완료: {filtered_count}개 종목 필터링됨")
         if filtered_count > 0:
-            formatted_date = _format_date(collected_data["기준일"])
-            print(f"저장 위치: outputs/reports/data_{formatted_date}_collected.json")
+            reports_base = PROJECT_ROOT / "outputs" / "reports"
+            save_path = get_report_date_dir(reports_base, collected_data["기준일"]) / "collected.json"
+            print(f"저장 위치: {save_path}")
         return
 
     # ── analyze 모드: Phase 2+3만 (저장된 데이터에서 이어가기) ──

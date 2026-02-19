@@ -16,6 +16,26 @@ PROJECT_ROOT = Path(__file__).parent.parent
 REPORTS_DIR = PROJECT_ROOT / "outputs" / "reports"
 
 
+def get_report_date_dir(base_dir: Path, date: str) -> Path:
+    """
+    날짜 문자열을 reports/YYYY/MM/DD 경로로 변환하고 디렉터리 생성 후 반환.
+
+    Args:
+        base_dir: reports 베이스 디렉터리 (예: outputs/reports)
+        date: YYYYMMDD 또는 YYYY-MM-DD 형식
+
+    Returns:
+        base_dir / YYYY / MM / DD (생성됨)
+    """
+    clean = date.replace("-", "") if "-" in date else date
+    if len(clean) < 8:
+        clean = clean.ljust(8, "0")
+    yyyy, mm, dd = clean[:4], clean[4:6], clean[6:8]
+    path = base_dir / yyyy / mm / dd
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class ReportGenerator:
     """분석 결과 리포트 생성기"""
 
@@ -34,16 +54,16 @@ class ReportGenerator:
         Args:
             report_content: 마크다운 리포트 텍스트
             date: 분석 날짜 (YYYYMMDD)
-            filename: 파일명 (기본값: report_YYYYMMDD.md)
+            filename: 파일명 (기본값: report.md, 날짜 폴더 내)
 
         Returns:
             str: 저장된 파일 경로
         """
         if not filename:
-            formatted_date = self._format_date(date)
-            filename = f"report_{formatted_date}.md"
-
-        filepath = REPORTS_DIR / filename
+            date_dir = get_report_date_dir(REPORTS_DIR, date)
+            filepath = date_dir / "report.md"
+        else:
+            filepath = REPORTS_DIR / filename
         filepath.write_text(report_content, encoding="utf-8")
 
         logger.info(f"[리포트] 마크다운 리포트 저장: {filepath}")
@@ -61,14 +81,18 @@ class ReportGenerator:
         Args:
             data: 저장할 데이터
             date: 분석 날짜
-            stage: 분석 단계명
+            stage: 분석 단계명 (collected -> collected.json, full -> full.json)
 
         Returns:
             str: 저장된 파일 경로
         """
-        formatted_date = self._format_date(date)
-        filename = f"data_{formatted_date}_{stage}.json"
-        filepath = REPORTS_DIR / filename
+        date_dir = get_report_date_dir(REPORTS_DIR, date)
+        if stage == "collected":
+            filepath = date_dir / "collected.json"
+        elif stage == "full":
+            filepath = date_dir / "full.json"
+        else:
+            filepath = date_dir / f"{stage}.json"
 
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -251,7 +275,7 @@ class ReportGenerator:
 
     def get_recent_reports(self, count: int = 10) -> list[dict]:
         """
-        최근 리포트 목록 조회
+        최근 리포트 목록 조회 (날짜 폴더 내 report.md 및 구 구조 report_*.md 지원)
 
         Args:
             count: 조회할 리포트 수
@@ -260,18 +284,54 @@ class ReportGenerator:
             list[dict]: 리포트 정보 리스트
         """
         reports = []
-        for filepath in sorted(REPORTS_DIR.glob("report_*.md"), reverse=True):
-            reports.append(
-                {
-                    "filename": filepath.name,
-                    "path": str(filepath),
-                    "date": filepath.stem.replace("report_", ""),
-                    "size": filepath.stat().st_size,
-                    "modified": datetime.fromtimestamp(
-                        filepath.stat().st_mtime
-                    ).strftime("%Y-%m-%d %H:%M"),
-                }
-            )
-            if len(reports) >= count:
-                break
-        return reports
+        seen_dates = set()
+
+        # 새 구조: outputs/reports/YYYY/MM/DD/report.md
+        for filepath in REPORTS_DIR.glob("**/report.md"):
+            try:
+                rel = filepath.relative_to(REPORTS_DIR)
+                parts = rel.parts
+                if (
+                    len(parts) == 4
+                    and parts[-1] == "report.md"
+                    and parts[0].isdigit()
+                    and parts[1].isdigit()
+                    and parts[2].isdigit()
+                ):
+                    yyyy, mm, dd = parts[0], parts[1], parts[2]
+                    date_str = f"{yyyy}-{mm}-{dd}"
+                    if date_str not in seen_dates:
+                        seen_dates.add(date_str)
+                        reports.append(
+                            {
+                                "filename": filepath.name,
+                                "path": str(filepath),
+                                "date": date_str,
+                                "size": filepath.stat().st_size,
+                                "modified": datetime.fromtimestamp(
+                                    filepath.stat().st_mtime
+                                ).strftime("%Y-%m-%d %H:%M"),
+                            }
+                        )
+            except ValueError:
+                continue
+
+        # 구 구조: outputs/reports/report_YYYY-MM-DD.md
+        for filepath in REPORTS_DIR.glob("report_*.md"):
+            date_str = filepath.stem.replace("report_", "")
+            if date_str not in seen_dates:
+                seen_dates.add(date_str)
+                reports.append(
+                    {
+                        "filename": filepath.name,
+                        "path": str(filepath),
+                        "date": date_str,
+                        "size": filepath.stat().st_size,
+                        "modified": datetime.fromtimestamp(
+                            filepath.stat().st_mtime
+                        ).strftime("%Y-%m-%d %H:%M"),
+                    }
+                )
+
+        reports.sort(key=lambda x: x["date"], reverse=True)
+        return reports[:count]

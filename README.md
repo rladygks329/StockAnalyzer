@@ -23,18 +23,18 @@ Phase 1: 데이터 수집 (Python only, AI API 불필요)
   ├─ pykrx → 재무지표 수집 + Python 규칙기반 등급(A~D) 부여
   ├─ pykrx → 시장지수/외국인매매 수집
   └─ 네이버 API → 종목별 뉴스 수집
-  → outputs/reports/data_YYYY-MM-DD_collected.json 저장
+  → outputs/reports/YYYY/MM/DD/collected.json 저장
 
 Phase 2: AI 종합분석 (Step 4)
   ├─ 원본 뉴스 + 재무등급 + 전체 데이터를 프롬프트에 주입
   ├─ 뉴스 감성분석 + 시장 동향 + 종목별 시그널 한 번에 분석
-  └─ prompt_4_YYYY-MM-DD.txt 저장 (API 없이도 사용 가능)
+  └─ outputs/reports/YYYY/MM/DD/prompt_4.txt 저장 (API 없이도 사용 가능)
 
 Phase 3: AI 리포트 생성 (Step 5)
   ├─ 종합분석 결과를 프롬프트에 주입
-  └─ prompt_5_YYYY-MM-DD.txt 저장 (API 없이도 사용 가능)
+  └─ outputs/reports/YYYY/MM/DD/prompt_5.txt 저장 (API 없이도 사용 가능)
 
-→ 최종 출력: report_YYYY-MM-DD.md / data_YYYY-MM-DD_full.json
+→ 최종 출력: 같은 폴더 내 report.md / full.json
 ```
 
 **이전 5-Step 대비 개선점:**
@@ -80,8 +80,13 @@ cp config/.env.example .env
 
 ### 전체 파이프라인 실행
 ```bash
+# 기본: 데이터 수집(collect) → AI 분석(analyze)까지 실행하되, API 호출 없이 프롬프트만 파일로 저장
 python main.py                    # 최근 거래일 기준
 python main.py --date 20260213    # 특정 날짜
+
+# AI API를 호출해 실제 분석·리포트까지 수행하려면 --api
+python main.py --api
+python main.py --api --date 20260213
 ```
 
 ### Phase별 실행 (스텝별 이어가기)
@@ -90,37 +95,35 @@ python main.py --date 20260213    # 특정 날짜
 # Phase 1만: 데이터 수집 (AI API 불필요)
 python main.py --step collect --date 20260213
 
-# 저장된 데이터에서 AI 분석 이어가기
-python main.py --step analyze --from-data outputs/reports/data_2026-02-13_collected.json
+# 저장된 데이터에서 AI 분석 이어가기 (경로: outputs/reports/YYYY/MM/DD/collected.json)
+python main.py --step analyze --from-data outputs/reports/2026/02/13/collected.json
 
-# API 호출 없이 프롬프트만 저장 (다른 AI에 직접 입력용)
-python main.py --step analyze --from-data outputs/reports/data_2026-02-13_collected.json --prompt-only
+# API 호출 
+python main.py --step analyze --from-data outputs/reports/2026/02/13/collected.json --api
 ```
 
 ### Step별 프로바이더 지정
 
 ```bash
-# 종합분석은 Gemini, 리포트는 Claude
-python main.py --step4 gemini --step5 claude
+# 종합분석은 Gemini, 리포트는 Claude (API 사용 시)
+python main.py --api --step4 gemini --step5 claude
 
 # 전체 Step을 GPT로
-python main.py --provider gpt
+python main.py --api --provider gpt
 ```
 
 ### 프롬프트 확인/디버깅
 
 ```bash
-# 프롬프트를 콘솔에 출력 + 정상 분석
-python main.py --show-prompts
-
-# 프롬프트만 저장, API 호출 스킵
-python main.py --prompt-only
+# 프롬프트를 콘솔에 출력 (API 사용 시)
+python main.py --api --show-prompts
 ```
 
 ### 매일 자동 실행 (스케줄러)
 ```bash
-python main.py --schedule                # 기본 15:40
-python main.py --schedule --time 16:00   # 시각 지정
+# API 호출까지 수행하려면 --api 함께 지정 (기본은 프롬프트만 저장)
+python main.py --schedule --api             # 기본 15:40
+python main.py --schedule --api --time 16:00 # 시각 지정
 ```
 
 ### Streamlit 대시보드
@@ -133,8 +136,9 @@ streamlit run app.py
 | 옵션 | 설명 | 기본값 |
 |------|------|--------|
 | `--step` | 실행할 Phase (`collect`, `analyze`, `all`) | `all` |
-| `--from-data` | 저장된 collected JSON 파일 경로 | - |
-| `--prompt-only` | API 호출 없이 프롬프트만 파일로 저장 | `false` |
+| `--from-data` | 저장된 collected JSON 파일 경로 (`outputs/reports/YYYY/MM/DD/collected.json`) | - |
+| `--api` | AI API 호출 수행 (미지정 시 프롬프트만 저장) | `false` |
+| `--prompt-only` | API 호출 없이 프롬프트만 저장 (기본 동작과 동일) | 기본 동작 |
 | `--provider` | 글로벌 AI 프로바이더 | `.env` 설정 |
 | `--step4` | Step 4 (종합분석) 프로바이더 | 글로벌 설정 |
 | `--step5` | Step 5 (리포트) 프로바이더 | 글로벌 설정 |
@@ -143,7 +147,7 @@ streamlit run app.py
 | `--time` | 스케줄 실행 시각 (HH:MM) | `15:40` |
 | `--log-level` | 로깅 레벨 | `INFO` |
 | `--show-prompts` | Step 4/5 프롬프트 콘솔 출력 | `false` |
-| `--no-api` | `--prompt-only`와 동일 (하위 호환) | `false` |
+| `--no-api` | `--prompt-only`와 동일 (하위 호환) | - |
 
 ## 프로젝트 구조
 
@@ -164,7 +168,7 @@ StockAnalyzer/
 │   ├── scheduler.py              # 일일 자동 실행 스케줄러
 │   └── test_providers.py         # AI 프로바이더 연결 테스트
 ├── outputs/
-│   └── reports/                  # 일별 리포트/데이터/프롬프트 저장
+│   └── reports/                  # 일별 리포트/데이터/프롬프트 (경로: YYYY/MM/DD)
 ├── app.py                        # Streamlit 대시보드
 ├── main.py                       # CLI 엔트리포인트
 ├── requirements.txt
@@ -173,13 +177,15 @@ StockAnalyzer/
 
 ## 출력 파일
 
+모든 파일은 **날짜 폴더** `outputs/reports/YYYY/MM/DD/` 아래에 저장됩니다.
+
 | 파일 | 설명 |
 |------|------|
-| `data_YYYY-MM-DD_collected.json` | Phase 1 수집 데이터 (이어가기 가능) |
-| `prompt_4_YYYY-MM-DD.txt` | 데이터 주입된 Step 4 프롬프트 |
-| `prompt_5_YYYY-MM-DD.txt` | 데이터 주입된 Step 5 프롬프트 |
-| `report_YYYY-MM-DD.md` | 최종 마크다운 리포트 |
-| `data_YYYY-MM-DD_full.json` | 전체 분석 데이터 (JSON) |
+| `collected.json` | Phase 1 수집 데이터 (이어가기 가능) |
+| `prompt_4.txt` | 데이터 주입된 Step 4 프롬프트 |
+| `prompt_5.txt` | 데이터 주입된 Step 5 프롬프트 |
+| `report.md` | 최종 마크다운 리포트 |
+| `full.json` | 전체 분석 데이터 (JSON) |
 
 ## 분석 출력 형식
 
@@ -211,3 +217,4 @@ StockAnalyzer/
 |------------|------|------------------------------|--------------------------|
 | 2026-02-06 | 한화에너지 솔루션, KD, 코데즈컴바인 | 한화 에너지 솔루션 10주 매입 | 수익률 +12.9%            |
 | 2026-02-09 | 한화에너지 솔루션, 미래에셋증권, 삼성전자 |  |             |
+| 2026-02-19 | 유진투자증권, 대한해운, 흥아해운 |  |한화 에너지 솔루션 10주 매도 수익률 20.1%, 3종목 60만원치 매입             |

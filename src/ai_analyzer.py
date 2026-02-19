@@ -19,6 +19,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from src.report_generator import get_report_date_dir
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -484,10 +486,10 @@ class AIAnalyzer:
             return {"raw_response": text}
 
     @staticmethod
-    def _save_prompt_file(prompt: str, filename: str) -> str:
-        """프롬프트를 파일로 저장"""
-        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        filepath = REPORTS_DIR / filename
+    def _save_prompt_file(prompt: str, date: str, step: int) -> str:
+        """프롬프트를 날짜 폴더 내 prompt_{step}.txt로 저장"""
+        date_dir = get_report_date_dir(REPORTS_DIR, date)
+        filepath = date_dir / f"prompt_{step}.txt"
         filepath.write_text(prompt, encoding="utf-8")
         logger.info(f"[AI 분석] 프롬프트 저장: {filepath}")
         return str(filepath)
@@ -554,9 +556,8 @@ class AIAnalyzer:
 
         prompt = self.build_comprehensive_prompt(collected_data)
 
-        # 프롬프트 파일 저장
-        formatted_date = self._format_date(date)
-        self._save_prompt_file(prompt, f"prompt_4_{formatted_date}.txt")
+        # 프롬프트 파일 저장 (날짜 폴더 내 prompt_4.txt)
+        self._save_prompt_file(prompt, date, 4)
 
         if self.show_prompts:
             print(f"\n{'─'*55}", flush=True)
@@ -585,9 +586,8 @@ class AIAnalyzer:
 
         prompt = self.build_report_prompt(comprehensive_analysis)
 
-        # 프롬프트 파일 저장
-        formatted_date = self._format_date(date)
-        self._save_prompt_file(prompt, f"prompt_5_{formatted_date}.txt")
+        # 프롬프트 파일 저장 (날짜 폴더 내 prompt_5.txt)
+        self._save_prompt_file(prompt, date, 5)
 
         if self.show_prompts:
             print(f"\n{'─'*55}", flush=True)

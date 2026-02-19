@@ -81,41 +81,89 @@ st.markdown(
 
 
 # ===== 유틸리티 함수 =====
+def _date_dir_path(date_str: str) -> Path:
+    """날짜 문자열(YYYY-MM-DD)을 reports/YYYY/MM/DD 경로로 변환 (파일명 없음)"""
+    clean = date_str.replace("-", "").ljust(8, "0")
+    yyyy, mm, dd = clean[:4], clean[4:6], clean[6:8]
+    return REPORTS_DIR / yyyy / mm / dd
+
+
 def load_report_data(date_str: str) -> dict:
-    """리포트 JSON 데이터 로드"""
-    filepath = REPORTS_DIR / f"data_{date_str}_full.json"
+    """리포트 JSON 데이터 로드 (날짜 폴더 full.json 우선, 구 구조 폴백)"""
+    date_dir = _date_dir_path(date_str)
+    filepath = date_dir / "full.json"
     if filepath.exists():
         with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    legacy = REPORTS_DIR / f"data_{date_str}_full.json"
+    if legacy.exists():
+        with open(legacy, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def load_raw_data(date_str: str) -> dict:
-    """원시 수집 데이터 로드"""
-    filepath = REPORTS_DIR / f"data_{date_str}_raw_collected.json"
+    """원시 수집 데이터 로드 (날짜 폴더 collected.json 우선, 구 구조 폴백)"""
+    date_dir = _date_dir_path(date_str)
+    filepath = date_dir / "collected.json"
     if filepath.exists():
         with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    legacy = REPORTS_DIR / f"data_{date_str}_raw_collected.json"
+    if legacy.exists():
+        with open(legacy, "r", encoding="utf-8") as f:
+            return json.load(f)
+    legacy2 = REPORTS_DIR / f"data_{date_str}_collected.json"
+    if legacy2.exists():
+        with open(legacy2, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def load_markdown_report(date_str: str) -> str:
-    """마크다운 리포트 로드"""
-    filepath = REPORTS_DIR / f"report_{date_str}.md"
+    """마크다운 리포트 로드 (날짜 폴더 report.md 우선, 구 구조 폴백)"""
+    date_dir = _date_dir_path(date_str)
+    filepath = date_dir / "report.md"
     if filepath.exists():
         return filepath.read_text(encoding="utf-8")
+    legacy = REPORTS_DIR / f"report_{date_str}.md"
+    if legacy.exists():
+        return legacy.read_text(encoding="utf-8")
     return ""
 
 
 def get_available_dates() -> list[str]:
-    """사용 가능한 리포트 날짜 목록"""
+    """사용 가능한 리포트 날짜 목록 (날짜 폴더 + 구 구조 하위 호환)"""
     dates = set()
+    # 새 구조: outputs/reports/YYYY/MM/DD/report.md 또는 full.json
+    def _is_date_dir(parts: tuple, filename: str) -> bool:
+        return (
+            len(parts) == 4
+            and parts[-1] == filename
+            and parts[0].isdigit()
+            and parts[1].isdigit()
+            and parts[2].isdigit()
+        )
+
+    for f in REPORTS_DIR.glob("**/report.md"):
+        try:
+            rel = f.relative_to(REPORTS_DIR)
+            if _is_date_dir(rel.parts, "report.md"):
+                dates.add(f"{rel.parts[0]}-{rel.parts[1]}-{rel.parts[2]}")
+        except ValueError:
+            pass
+    for f in REPORTS_DIR.glob("**/full.json"):
+        try:
+            rel = f.relative_to(REPORTS_DIR)
+            if _is_date_dir(rel.parts, "full.json"):
+                dates.add(f"{rel.parts[0]}-{rel.parts[1]}-{rel.parts[2]}")
+        except ValueError:
+            pass
+    # 구 구조: report_*.md, data_*_full.json
     for f in REPORTS_DIR.glob("report_*.md"):
-        date = f.stem.replace("report_", "")
-        dates.add(date)
+        dates.add(f.stem.replace("report_", ""))
     for f in REPORTS_DIR.glob("data_*_full.json"):
-        date = f.stem.replace("data_", "").replace("_full", "")
-        dates.add(date)
+        dates.add(f.stem.replace("data_", "").replace("_full", ""))
     return sorted(dates, reverse=True)
 
 
