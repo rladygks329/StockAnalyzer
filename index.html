@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>리포트 뷰어</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif; font-size: 1rem; line-height: 1.6; color: #333; margin: 0; padding: 1rem; background: #f8f9fa; }
+    .toolbar { max-width: 720px; margin: 0 auto 1rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .toolbar label { cursor: pointer; padding: 0.4rem 0.75rem; background: #fff; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; }
+    .toolbar input[type="file"] { display: none; }
+    .toolbar .hint { color: #666; font-size: 0.85rem; }
+    #content { max-width: 720px; margin: 0 auto; padding: 1.5rem; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    #content:empty { display: none; }
+    #content h1 { font-size: 1.75rem; margin: 0 0 0.5rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem; }
+    #content h2 { font-size: 1.35rem; margin: 1.5rem 0 0.5rem; }
+    #content h3 { font-size: 1.1rem; margin: 1.25rem 0 0.4rem; }
+    #content p { margin: 0.5rem 0; }
+    #content blockquote { margin: 0.75rem 0; padding: 0.5rem 0 0.5rem 1rem; border-left: 4px solid #ddd; background: #f5f5f5; color: #555; }
+    #content blockquote p { margin: 0.25rem 0; }
+    #content hr { margin: 1.5rem 0; border: none; border-top: 1px solid #e0e0e0; }
+    #content strong { font-weight: 600; }
+    .table-wrap { overflow-x: auto; margin: 0.75rem 0; }
+    #content table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+    #content th, #content td { border: 1px solid #ddd; padding: 0.5rem 0.75rem; text-align: left; vertical-align: top; }
+    #content th { background: #f0f0f0; font-weight: 600; }
+    #content tr:nth-child(even) { background: #fafafa; }
+    #content .disclaimer { font-size: 0.9em; color: #666; margin-top: 1.5rem; }
+    .load-err { max-width: 720px; margin: 0 auto; padding: 1rem; color: #c00; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label for="fileInput">📄 파일 선택</label>
+    <input type="file" id="fileInput" accept=".md">
+    <span class="hint">또는 로컬 서버 실행 시 오늘 날짜 리포트를 자동 로드합니다.</span>
+  </div>
+  <div class="load-err" id="loadErr" style="display:none;"></div>
+  <article id="content"></article>
+
+  <script>
+    (function () {
+      function escapeHtml(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+      function inlineMd(s) {
+        var t = escapeHtml(s);
+        return t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      }
+      function parseTableRows(lines) {
+        var rows = [];
+        var consumed = 0;
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          if (!/^\|/.test(line)) break;
+          consumed++;
+          var cells = line.split('|').slice(1, -1).map(function (c) { return c.trim(); });
+          if (cells.length === 0) continue;
+          var isSep = cells.every(function (c) { return /^-+$/.test(c); });
+          if (isSep) continue;
+          rows.push(cells);
+        }
+        return { rows: rows, consumed: consumed };
+      }
+      function mdToHtml(md) {
+        var lines = md.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+        var out = [];
+        var i = 0;
+        while (i < lines.length) {
+          var line = lines[i];
+          var trimmed = line.trim();
+          if (/^### /.test(line)) {
+            out.push('<h3>' + inlineMd(line.replace(/^### /, '')) + '</h3>');
+            i++;
+            continue;
+          }
+          if (/^## /.test(line)) {
+            out.push('<h2>' + inlineMd(line.replace(/^## /, '')) + '</h2>');
+            i++;
+            continue;
+          }
+          if (/^# /.test(line)) {
+            out.push('<h1>' + inlineMd(line.replace(/^# /, '')) + '</h1>');
+            i++;
+            continue;
+          }
+          if (/^---\s*$/.test(line) || /^\*\*\*\s*$/.test(line)) {
+            out.push('<hr>');
+            i++;
+            continue;
+          }
+          if (/^> /.test(line)) {
+            var bq = [];
+            while (i < lines.length && /^> ?/.test(lines[i])) {
+              bq.push(lines[i].replace(/^> ?/, ''));
+              i++;
+            }
+            out.push('<blockquote><p>' + bq.map(function (l) { return inlineMd(l); }).join('</p><p>') + '</p></blockquote>');
+            continue;
+          }
+          if (/^\|/.test(line)) {
+            var tbl = parseTableRows(lines.slice(i));
+            if (tbl.rows.length === 0) { i++; continue; }
+            var thead = tbl.rows[0];
+            var tbody = tbl.rows.slice(1);
+            var table = '<div class="table-wrap"><table><thead><tr>';
+            for (var c = 0; c < thead.length; c++) table += '<th>' + inlineMd(thead[c]) + '</th>';
+            table += '</tr></thead><tbody>';
+            for (var r = 0; r < tbody.length; r++) {
+              table += '<tr>';
+              for (var c = 0; c < tbody[r].length; c++) table += '<td>' + inlineMd(tbody[r][c]) + '</td>';
+              table += '</tr>';
+            }
+            table += '</tbody></table></div>';
+            out.push(table);
+            i += tbl.consumed;
+            continue;
+          }
+          if (trimmed === '') {
+            i++;
+            continue;
+          }
+          var para = [];
+          while (i < lines.length && lines[i].trim() !== '' && !/^#/.test(lines[i]) && !/^---\s*$/.test(lines[i]) && !/^\*\*\*\s*$/.test(lines[i]) && !/^>/.test(lines[i]) && !/^\|/.test(lines[i])) {
+            para.push(lines[i]);
+            i++;
+          }
+          if (para.length) out.push('<p>' + inlineMd(para.join('\n')) + '</p>');
+        }
+        return out.join('\n');
+      }
+      function render(md) {
+        var el = document.getElementById('content');
+        el.innerHTML = mdToHtml(md);
+        var lastP = el.querySelector('p:last-of-type');
+        if (lastP && /면책|참고 자료|투자 권유가 아님/i.test(lastP.textContent)) lastP.classList.add('disclaimer');
+      }
+      function showErr(msg) {
+        var el = document.getElementById('loadErr');
+        el.textContent = msg;
+        el.style.display = 'block';
+      }
+      function hideErr() {
+        document.getElementById('loadErr').style.display = 'none';
+      }
+      document.getElementById('fileInput').addEventListener('change', function (e) {
+        var f = e.target.files[0];
+        if (!f) return;
+        hideErr();
+        var r = new FileReader();
+        r.onload = function () { render(r.result); };
+        r.onerror = function () { showErr('파일을 읽을 수 없습니다.'); };
+        r.readAsText(f, 'UTF-8');
+      });
+      function tryLoadPath(path) {
+        hideErr();
+        fetch(path)
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.status === 404 ? '해당 날짜의 리포트가 없습니다.' : '로드 실패');
+            return res.text();
+          })
+          .then(function (text) { render(text); })
+          .catch(function (err) { showErr(err.message || '로드 실패'); });
+      }
+      var params = new URLSearchParams(location.search);
+      var pathParam = params.get('path');
+      if (pathParam) {
+        tryLoadPath(pathParam);
+      } else {
+        var now = new Date();
+        var y = now.getFullYear();
+        var m = String(now.getMonth() + 1).padStart(2, '0');
+        var d = String(now.getDate()).padStart(2, '0');
+        var todayPath = 'outputs/reports/' + y + '/' + m + '/' + d + '/report.md';
+        if (location.protocol === 'http:' || location.protocol === 'https:') tryLoadPath(todayPath);
+      }
+    })();
+  </script>
+</body>
+</html>
