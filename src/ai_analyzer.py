@@ -426,7 +426,7 @@ class AIAnalyzer:
         return filepath.read_text(encoding="utf-8")
 
     def _call_step_api(self, step: int, user_prompt: str) -> str:
-        """Step에 매핑된 프로바이더로 API 호출"""
+        """Step에 매핑된 프로바이더로 API 호출. 429 rate limit 시 2분 대기 후 1회 재시도."""
         info = self._get_step_info(step)
         client: BaseAIClient = info["client"]
         step_def = STEP_DEFINITIONS[step]
@@ -441,31 +441,51 @@ class AIAnalyzer:
             f"{client.provider_name} / {info['model']}"
         )
 
-        t0 = time.time()
-        try:
-            result = client.call_api(
-                system_prompt=self.system_prompt,
-                user_prompt=user_prompt,
-                model=info["model"],
-                temperature=info["temperature"],
-                max_tokens=info["max_tokens"],
-            )
-            elapsed = time.time() - t0
-            print(
-                f"    Step {step} ({step_def['name']}) 완료 ({elapsed:.1f}초)",
-                flush=True,
-            )
-            return result
-        except Exception as e:
-            elapsed = time.time() - t0
-            print(
-                f"    Step {step} ({step_def['name']}) 실패 ({elapsed:.1f}초): {e}",
-                flush=True,
-            )
-            logger.error(
-                f"[AI 분석] Step {step} ({client.provider_name}) API 호출 실패: {e}"
-            )
-            raise
+        last_error = None
+        for attempt in range(2):  # 최대 2회 (첫 시도 + 429 시 1회 재시도)
+            t0 = time.time()
+            try:
+                result = client.call_api(
+                    system_prompt=self.system_prompt,
+                    user_prompt=user_prompt,
+                    model=info["model"],
+                    temperature=info["temperature"],
+                    max_tokens=info["max_tokens"],
+                )
+                elapsed = time.time() - t0
+                print(
+                    f"    Step {step} ({step_def['name']}) 완료 ({elapsed:.1f}초)",
+                    flush=True,
+                )
+                return result
+            except Exception as e:
+                last_error = e
+                elapsed = time.time() - t0
+                err_str = str(e)
+                is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower()
+                if is_rate_limit and attempt == 0:
+                    wait_sec = 120
+                    logger.warning(
+                        f"[AI 분석] Step {step} rate limit(429) 발생. "
+                        f"{wait_sec}초 대기 후 재시도합니다."
+                    )
+                    print(
+                        f"    Rate limit(429) 발생 → {wait_sec}초 대기 후 재시도...",
+                        flush=True,
+                    )
+                    time.sleep(wait_sec)
+                    continue
+                print(
+                    f"    Step {step} ({step_def['name']}) 실패 ({elapsed:.1f}초): {e}",
+                    flush=True,
+                )
+                logger.error(
+                    f"[AI 분석] Step {step} ({client.provider_name}) API 호출 실패: {e}"
+                )
+                raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("API 호출 실패")
 
     @staticmethod
     def _extract_json(text: str) -> dict:
@@ -629,11 +649,23 @@ class AIAnalyzer:
         print(f"{'='*55}", flush=True)
         comprehensive_analysis = self.analyze_comprehensive(collected_data, date)
 
-        # Step 5: 최종 리포트 생성
+        # Step 5: 최종 리포트 생성 (실패해도 Step 4 결과는 보존해 full.json 저장 → --step report로 이어가기)
         print(f"\n{'='*55}", flush=True)
         print(f"  [Step 5] 최종 리포트 생성", flush=True)
         print(f"{'='*55}", flush=True)
-        report_markdown = self.generate_report(comprehensive_analysis, date)
+        try:
+            report_markdown = self.generate_report(comprehensive_analysis, date)
+        except Exception as e:
+            logger.warning(
+                f"[AI 분석] Step 5 실패 (Step 4 결과는 저장됨): {e}. "
+                "--step report --from-data full.json 으로 재실행 가능합니다."
+            )
+            print(
+                "    Step 5 실패. Step 4 결과는 full.json에 저장됩니다. "
+                "--step report로 리포트만 재실행하세요.",
+                flush=True,
+            )
+            report_markdown = ""
 
         pipeline_elapsed = time.time() - pipeline_start
         print(f"\n{'='*55}", flush=True)

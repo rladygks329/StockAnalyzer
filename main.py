@@ -14,6 +14,7 @@ API로 실제 분석을 수행하려면 --api 옵션을 사용하세요.
     python main.py --api                                    # API 호출로 실제 분석 수행
     python main.py --step collect --date 20260213           # Phase 1만
     python main.py --step analyze --from-data data.json     # 저장된 데이터에서 이어가기
+    python main.py --step report --from-data full.json      # Step 5(리포트)만 재실행
     python main.py --step4 gemini --step5 claude            # Step별 프로바이더
     python main.py --schedule --api                         # 매일 자동 실행 (API 호출)
     streamlit run app.py                                    # 대시보드
@@ -293,6 +294,7 @@ def main():
   python main.py --api                                    API 호출로 실제 분석 수행
   python main.py --step collect --date 20260213           데이터 수집만
   python main.py --step analyze --from-data data.json     저장된 데이터에서 분석
+  python main.py --step report --from-data full.json     Step 5(리포트)만 재실행
   python main.py --step4 gemini --step5 claude            Step별 프로바이더
   python main.py --schedule --api                         매일 자동 실행 (API 호출)
   streamlit run app.py                                    Streamlit 대시보드
@@ -302,15 +304,15 @@ def main():
         "--step",
         type=str,
         default="all",
-        choices=["collect", "analyze", "all"],
-        help="실행할 Phase (collect=데이터수집, analyze=AI분석, all=전체)",
+        choices=["collect", "analyze", "report", "all"],
+        help="실행할 Phase (collect=데이터수집, analyze=Step4+5, report=Step5만, all=전체)",
     )
     parser.add_argument(
         "--from-data",
         type=str,
         default=None,
         dest="from_data",
-        help="저장된 collected JSON 파일 경로 (--step analyze와 함께 사용)",
+        help="저장된 JSON 경로 (analyze=collected.json, report=full.json 등)",
     )
     parser.add_argument(
         "--api",
@@ -456,6 +458,76 @@ def main():
         print(f"\nAI 분석 완료!")
         print(f"리포트: {saved_files.get('markdown', 'N/A')}")
         print(f"데이터: {saved_files.get('json', 'N/A')}")
+        return
+
+    # ── report 모드: Step 5(리포트)만 (full.json 등 분석 결과에서) ──
+    if args.step == "report":
+        if not args.from_data:
+            parser.error("--step report는 --from-data 옵션이 필요합니다.")
+
+        data_path = Path(args.from_data)
+        if not data_path.is_absolute():
+            data_path = PROJECT_ROOT / data_path
+        if not data_path.exists():
+            print(f"파일을 찾을 수 없습니다: {data_path}")
+            sys.exit(1)
+
+        logger.info(f"[Step 5] 분석 결과 로드: {data_path}")
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        comprehensive_analysis = data.get("comprehensive_analysis")
+        if comprehensive_analysis is None:
+            print("오류: JSON에 'comprehensive_analysis' 키가 없습니다. full.json 등 분석 결과 파일을 지정하세요.")
+            sys.exit(1)
+        if not comprehensive_analysis:
+            print("오류: comprehensive_analysis가 비어 있어 리포트를 생성할 수 없습니다.")
+            sys.exit(1)
+
+        # 날짜 추출: filtered_analysis.기준일 > 기준일 > 경로(YYYY/MM/DD)
+        date_str = None
+        fa = data.get("filtered_analysis") or {}
+        if isinstance(fa, dict) and fa.get("기준일"):
+            date_str = fa["기준일"]
+        if not date_str:
+            date_str = data.get("기준일")
+        if not date_str and "reports" in data_path.parts:
+            try:
+                idx = data_path.parts.index("reports")
+                if idx + 3 <= len(data_path.parts):
+                    yyyy, mm, dd = data_path.parts[idx + 1], data_path.parts[idx + 2], data_path.parts[idx + 3]
+                    if len(yyyy) == 4 and len(mm) == 2 and len(dd) == 2:
+                        date_str = f"{yyyy}{mm}{dd}"
+            except (ValueError, IndexError):
+                pass
+        if not date_str:
+            print("오류: 날짜를 추출할 수 없습니다. JSON에 기준일 또는 filtered_analysis.기준일이 있거나, 경로가 .../reports/YYYY/MM/DD/... 형식이어야 합니다.")
+            sys.exit(1)
+
+        # YYYY-MM-DD → YYYYMMDD 통일 (report_generator는 둘 다 처리)
+        analysis_date = date_str.replace("-", "") if len(date_str) >= 8 else date_str
+        if len(analysis_date) == 8 and analysis_date.isdigit():
+            pass
+        else:
+            print(f"오류: 유효하지 않은 날짜 형식입니다: {date_str}")
+            sys.exit(1)
+
+        try:
+            ai_analyzer = AIAnalyzer(
+                provider=args.provider,
+                step_config=step_config,
+                show_prompts=args.show_prompts,
+                analyze_by_api=not prompt_only,
+            )
+            report_markdown = ai_analyzer.generate_report(comprehensive_analysis, analysis_date)
+        except Exception as e:
+            logger.error(f"Step 5 리포트 생성 실패: {e}")
+            print(f"\n리포트 생성 실패: {e}")
+            sys.exit(1)
+
+        report_generator = ReportGenerator()
+        md_path = report_generator.save_markdown_report(report_markdown, analysis_date)
+        print(f"\nStep 5 완료! 리포트 저장: {md_path}")
         return
 
     # ── all 모드: 전체 파이프라인 ──

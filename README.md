@@ -100,6 +100,9 @@ python main.py --step analyze --from-data outputs/reports/2026/02/13/collected.j
 
 # API 호출 
 python main.py --step analyze --from-data outputs/reports/2026/02/13/collected.json --api
+
+# Step 5(리포트)만 재실행 (Step 4 결과가 있는 full.json 사용, 429 등으로 리포트만 실패했을 때)
+python main.py --step report --from-data outputs/reports/2026/02/20/full.json --api
 ```
 
 ### Step별 프로바이더 지정
@@ -135,8 +138,8 @@ streamlit run app.py
 
 | 옵션 | 설명 | 기본값 |
 |------|------|--------|
-| `--step` | 실행할 Phase (`collect`, `analyze`, `all`) | `all` |
-| `--from-data` | 저장된 collected JSON 파일 경로 (`outputs/reports/YYYY/MM/DD/collected.json`) | - |
+| `--step` | 실행할 Phase (`collect`, `analyze`, `report`, `all`) | `all` |
+| `--from-data` | 저장된 JSON 경로 (analyze 시 `collected.json`, report 시 `full.json`) | - |
 | `--api` | AI API 호출 수행 (미지정 시 프롬프트만 저장) | `false` |
 | `--prompt-only` | API 호출 없이 프롬프트만 저장 (기본 동작과 동일) | 기본 동작 |
 | `--provider` | 글로벌 AI 프로바이더 | `.env` 설정 |
@@ -187,6 +190,11 @@ StockAnalyzer/
 | `report.md` | 최종 마크다운 리포트 |
 | `full.json` | 전체 분석 데이터 (JSON) |
 
+### 실패 시 이어가기
+
+- **Step 5(리포트) 실패 시**: Step 4까지 성공했다면 `comprehensive_analysis`는 **full.json에 저장**됩니다. 리포트만 재생성하려면 `--step report --from-data outputs/reports/YYYY/MM/DD/full.json --api`로 Step 5만 다시 실행하세요.
+- **API 429 (rate limit)**: Step 4/5 호출 시 429가 발생하면 **1분 대기 후 1회 자동 재시도**합니다.
+
 ## 분석 출력 형식
 
 ### 시그널 판정 (5단계)
@@ -210,11 +218,3 @@ StockAnalyzer/
 
 > ⚠️ 본 시스템은 AI가 공개 데이터를 분석하여 생성한 참고 자료입니다.
 > 투자 권유가 아니며, 투자 결정은 본인의 판단과 책임 하에 이루어져야 합니다.
-
-
-## 성과
-| 일자       | 결과 | 실행                         | 비고                     |
-|------------|------|------------------------------|--------------------------|
-| 2026-02-06 | 한화에너지 솔루션, KD, 코데즈컴바인 | 한화 에너지 솔루션 10주 매입 | 수익률 +12.9%            |
-| 2026-02-09 | 한화에너지 솔루션, 미래에셋증권, 삼성전자 |  |             |
-| 2026-02-19 | 유진투자증권, 대한해운, 흥아해운 |  |한화 에너지 솔루션 10주 매도 수익률 20.1%, 3종목 60만원치 매입             |
