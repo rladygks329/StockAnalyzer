@@ -37,4 +37,5 @@ outputs/analysis.log
 .ipynb_checkpoints/
 CLAUDE.md
 .claude/
+.cursor/
 outputs
